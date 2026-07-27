@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ghostcut"
+version = "0.2.0"
+description = "AI-assisted video editing pipeline: proxy-first rough cuts to FCPXML/OTIO, beat-synced recap reels, and viral word-by-word captions"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Daniel Castillo (Ghost AI Systems)" }]
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Homepage = "https://ghostaisystems.com"
+Repository = "https://github.com/DanielSensual/ghostcut"
+
+[project.optional-dependencies]
+openai = ["openai>=1.40.0"]
+recap = ["opencv-python>=4.10", "numpy>=1.26"]
+test = ["pytest>=8.2.0"]
+
+[project.scripts]
+ghostcut = "ghostcut.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
