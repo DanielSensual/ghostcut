@@ -9,6 +9,7 @@ try:
     HAS_RECAP = True
 except ImportError:
     HAS_RECAP = False
+    _SR = 0  # placeholder so the skipped class body still evaluates
 
 
 @unittest.skipUnless(HAS_RECAP, "recap extra not installed")
