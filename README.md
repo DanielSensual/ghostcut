@@ -1,5 +1,9 @@
 # 👻 GhostCut
 
+[![CI](https://github.com/DanielSensual/ghostcut/actions/workflows/ci.yml/badge.svg)](https://github.com/DanielSensual/ghostcut/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](pyproject.toml)
+
 **AI-assisted video editing that ends in your NLE, not a black box.**
 
 GhostCut is an open-source editing pipeline built on ffmpeg and pure Python (zero required dependencies). It does the tedious 80% — ingest, proxies, analysis, shot selection, rough assembly — and hands you editable timelines, finished beat-synced reels, or viral-style captions.
