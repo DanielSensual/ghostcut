@@ -97,12 +97,20 @@ def extract_media_stats(probe: dict) -> dict[str, float | int | bool]:
     }
 
 
-def extract_silence_segments(stderr: str) -> list[tuple[float, float]]:
+def extract_silence_segments(
+    stderr: str, duration_s: float | None = None
+) -> list[tuple[float, float]]:
     starts = [float(value) for value in re.findall(r"silence_start:\s*([\d\.]+)", stderr)]
     ends = [float(value) for value in re.findall(r"silence_end:\s*([\d\.]+)", stderr)]
     segments: list[tuple[float, float]] = []
     for idx, start in enumerate(starts):
-        end = ends[idx] if idx < len(ends) else start
+        if idx < len(ends):
+            end = ends[idx]
+        elif duration_s is not None and duration_s > start:
+            # silencedetect omits silence_end when the file ends in silence
+            end = duration_s
+        else:
+            continue
         if end > start:
             segments.append((start, end))
     return segments

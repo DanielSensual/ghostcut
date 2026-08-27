@@ -16,16 +16,16 @@
  *   node ghost-captions.cjs --video input.mp4 --words /tmp/whisper-words.json --output final.mp4
  *
  *   # Generate ASS subtitle only (no burn-in) for use in FCP/Premiere/Resolve
- *   node ghost-captions.cjs --video input.mp4 --ass-only --output captions.ass
+ *   node ghost-captions.cjs --video input.mp4 --words timestamps.json --ass-only --output captions.ass
  *
  * Options:
  *   --video       Input video file (required)
  *   --audio       Audio file to transcribe (optional — auto-extracted if omitted)
  *   --words       Pre-generated Whisper JSON with word timestamps (skip transcription)
  *   --output      Output video or .ass file (default: output-captioned.mp4)
- *   --style       Caption style preset (default: hormozi)
+ *   --style       Caption style preset (default: captions)
  *   --highlight   Highlight color: hex "#FF00FF" or preset name "cyan" (default: cyan)
- *   --grouping    Words per group: 2, 3, or 4 (default: 3)
+ *   --grouping    Words per group (default: 5 for captions style, 3 otherwise)
  *   --position    Vertical position: "middle" | "lower" | "upper" (default: middle)
  *   --font        Font name (default: Montserrat — auto-detects availability)
  *   --pop         Word pop scale percentage (default: 120)
@@ -48,6 +48,7 @@
 
 const { execSync, spawnSync } = require('child_process');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 // ─── Parse CLI args ──────────────────────────────────────────
@@ -142,7 +143,7 @@ Options:
   --output      Output file (default: output-captioned.mp4)
   --style       ${Object.keys(getStylePresets()).join(' | ')} (default: captions)
   --highlight   Color: hex "#FF00FF" or name: ${Object.keys(COLOR_PRESETS).join(', ')}
-  --grouping    Words per group: 2, 3, or 4 (default: 3)
+  --grouping    Words per group (default: 5 for captions style, 3 otherwise)
   --position    middle | lower | upper (default: middle)
   --font        Font name (default: auto-detect)
   --pop         Word pop scale % (default: 120)
@@ -158,7 +159,7 @@ Examples:
   node ghost-captions.cjs --video reel.mp4 --style fire --highlight gold
 
   # Generate subtitle file for external editor
-  node ghost-captions.cjs --video reel.mp4 --ass-only --output captions.ass
+  node ghost-captions.cjs --video reel.mp4 --words timestamps.json --ass-only --output captions.ass
 `);
   process.exit(VIDEO ? 0 : 1);
 }
@@ -181,11 +182,16 @@ function hexToASSWithAlpha(hex, alpha = '00') {
 
 // ─── Step 1: Auto-extract audio from video ───────────────────
 function extractAudioFromVideo(videoPath) {
-  const audioPath = path.join('/tmp', `ghost-captions-audio-${Date.now()}.mp3`);
+  const audioPath = path.join(os.tmpdir(), `ghost-captions-audio-${Date.now()}.m4a`);
   console.log('🎵 Extracting audio from video...');
-  execSync(`ffmpeg -y -i "${videoPath}" -vn -acodec libmp3lame -q:a 2 "${audioPath}" 2>/dev/null`, {
-    stdio: 'pipe'
-  });
+  const result = spawnSync('ffmpeg', [
+    '-y', '-i', videoPath, '-vn', '-ac', '1', '-ar', '16000',
+    '-c:a', 'aac', '-b:a', '64k', audioPath,
+  ], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    console.error('❌ ffmpeg audio extract failed:', (result.stderr || result.error || '').toString().slice(-500));
+    process.exit(1);
+  }
   console.log(`   ✅ Audio extracted: ${audioPath}\n`);
   return audioPath;
 }
@@ -217,7 +223,18 @@ function getWordTimestamps(audioSource) {
 
   if (result.error) throw result.error;
 
-  const data = JSON.parse(result.stdout);
+  let data;
+  try {
+    data = JSON.parse(result.stdout);
+  } catch {
+    console.error('❌ Whisper API returned non-JSON:', (result.stdout || '').slice(0, 400));
+    process.exit(1);
+  }
+  if (data.error) {
+    const message = data.error.message || JSON.stringify(data.error);
+    console.error('❌ Whisper API error:', message);
+    process.exit(1);
+  }
 
   if (SAVE_WORDS) {
     const wordsPath = path.join(path.dirname(VIDEO), `${path.basename(VIDEO, path.extname(VIDEO))}-words.json`);
@@ -229,10 +246,19 @@ function getWordTimestamps(audioSource) {
 }
 
 // ─── Step 3: Group words into display chunks ─────────────────
+function wordText(w) {
+  return String(w.word ?? w.text ?? '').trim();
+}
+
 function groupWords(words, groupSize) {
   const groups = [];
   for (let i = 0; i < words.length; i += groupSize) {
-    const chunk = words.slice(i, i + groupSize);
+    const chunk = words.slice(i, i + groupSize).map(w => ({
+      ...w,
+      word: wordText(w) || ' ',
+      start: Number(w.start) || 0,
+      end: Number(w.end ?? w.start) || 0,
+    }));
     groups.push({
       words: chunk,
       start: chunk[0].start,
@@ -441,11 +467,18 @@ function burnSubtitles(assFile, videoFile, outputFile) {
   console.log('🔥 Burning captions with FFmpeg...');
 
   const escapedPath = assFile.replace(/\\/g, '\\\\').replace(/:/g, '\\:').replace(/'/g, "'\\'");
+  const ffmpegArgs = [
+    '-y', '-i', videoFile,
+    '-vf', `ass='${escapedPath}'`,
+    '-c:v', 'libx264', '-preset', 'fast', '-crf', '18', '-pix_fmt', 'yuv420p',
+    '-c:a', 'copy', outputFile,
+  ];
 
-  const cmd = `ffmpeg -y -i "${videoFile}" -vf "ass='${escapedPath}'" -c:v libx264 -preset fast -crf 18 -pix_fmt yuv420p -c:a copy "${outputFile}"`;
-
-  console.log(`  → ${cmd}\n`);
-  execSync(cmd, { stdio: 'inherit' });
+  console.log(`  → ffmpeg ${ffmpegArgs.map(a => (/\s/.test(a) ? `"${a}"` : a)).join(' ')}\n`);
+  const result = spawnSync('ffmpeg', ffmpegArgs, { stdio: 'inherit' });
+  if (result.status !== 0) {
+    process.exit(result.status || 1);
+  }
 }
 
 // ─── Main ────────────────────────────────────────────────────
@@ -477,7 +510,10 @@ async function main() {
 
   // 2. Get word timestamps
   const data = getWordTimestamps(audioSource);
-  const words = data.words || [];
+  let words = data.words || [];
+  if (!words.length && Array.isArray(data.segments)) {
+    words = data.segments.flatMap(s => s.words || []);
+  }
   console.log(`✅ Got ${words.length} word timestamps\n`);
 
   if (words.length === 0) {
@@ -493,12 +529,14 @@ async function main() {
   const ass = generateASS(groups);
 
   if (ASS_ONLY) {
-    const assOut = OUTPUT.endsWith('.ass') ? OUTPUT : OUTPUT.replace(/\.\w+$/, '.ass');
+    const assOut = OUTPUT.endsWith('.ass')
+      ? OUTPUT
+      : (OUTPUT.match(/\.\w+$/) ? OUTPUT.replace(/\.\w+$/, '.ass') : `${OUTPUT}.ass`);
     fs.writeFileSync(assOut, ass);
     console.log(`✅ ASS subtitle file saved: ${assOut}\n`);
     console.log('   Import this file into Final Cut Pro, Premiere Pro, or DaVinci Resolve');
   } else {
-    const assPath = path.join('/tmp', `ghost-captions-${Date.now()}.ass`);
+    const assPath = path.join(os.tmpdir(), `ghost-captions-${Date.now()}.ass`);
     fs.writeFileSync(assPath, ass);
     console.log(`✅ Generated ASS subtitle file: ${assPath}\n`);
 

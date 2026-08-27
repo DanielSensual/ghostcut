@@ -5,7 +5,7 @@ face-aware selection (frontality scoring, person exclusion, whip-pan
 rejection) -> per-segment vid.stab stabilization -> beat-locked assembly
 with crossfades.
 
-Requires the [recap] extra: pip install -e .[recap]
+Requires the [recap] extra: pip install -e ".[recap]"
 """
 
 from .beat import BeatGrid, analyze_song

@@ -10,7 +10,7 @@ pip install -e .                                      # core has zero dependenci
 python -m unittest discover -s tests -p 'test_*.py'   # <1s, needs no ffmpeg or media
 ```
 
-`pip install -e .[recap]` adds opencv+numpy for the recap module. The integration test and recap tests self-skip when their prerequisites (sample media, extras) are absent — a green run with skips is normal.
+`pip install -e ".[recap]"` adds opencv+numpy for the recap module. The integration test and recap tests self-skip when their prerequisites (sample media, extras) are absent — a green run with skips is normal.
 
 ## Architecture
 
@@ -36,7 +36,7 @@ Two pipelines share one package:
 - Fit BPM/phase **locally in the section you're cutting** (chorus), not from the song intro — grids drift. `--chorus-at` exists for manual pinning.
 - ffmpeg filtergraphs: a labeled pad is consumed once — `split`/`asplit` before reusing (e.g. sidechain + mix).
 - Captions: time against the FINAL cut, never source clips. Whisper on long/quiet audio hallucinates repeated lines — trust the first coherent occurrence.
-- SFace cosine similarity on real event footage: same person ≥ ~0.41, strangers ≤ ~0.32; the 0.365 exclusion threshold sits deliberately between.
+- SFace cosine similarity on real event footage: same person ≥ ~0.41, strangers ≤ ~0.32; the 0.40 exclusion threshold sits above the midpoint because matching is max-over-many-comparisons.
 - drawtext/libfreetype cannot render color emoji — keep emoji out of burned titles.
 
 ## Verify before you claim done

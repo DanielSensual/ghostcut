@@ -52,7 +52,7 @@ def extract_keyframes(clip: MediaClip, frames_dir: Path, interval: float = 2.0) 
     return sorted(clip_frames_dir.glob("*.jpg"))
 
 
-def _compute_phash(frame_path: Path) -> int:
+def _compute_phash(frame_path: Path) -> int | None:
     """Compute a 64-bit perceptual hash using FFmpeg to resize + grayscale."""
     # Use subprocess directly — stdout is raw binary pixels, not text
     proc = subprocess.run(
@@ -72,7 +72,7 @@ def _compute_phash(frame_path: Path) -> int:
 
     raw_bytes = proc.stdout
     if len(raw_bytes) < 64:
-        return 0
+        return None
 
     pixels = list(raw_bytes[:64])
     avg = sum(pixels) / 64.0
@@ -106,11 +106,12 @@ def compute_clip_phash(frames: list[Path]) -> str:
         return "0" * 16
     # Use the middle frame as representative
     mid = frames[len(frames) // 2]
-    return _phash_hex(_compute_phash(mid))
+    hashed = _compute_phash(mid)
+    return _phash_hex(hashed if hashed is not None else 0)
 
 
 def detect_duplicates(
-    clip_hashes: dict[str, int],
+    clip_hashes: dict[str, int | None],
 ) -> dict[str, str]:
     """Find duplicate clips by comparing perceptual hashes. Returns {duplicate_id: original_id}."""
     duplicates: dict[str, str] = {}
@@ -119,10 +120,16 @@ def detect_duplicates(
     for i in range(len(clip_ids)):
         if clip_ids[i] in duplicates:
             continue
+        hash_i = clip_hashes[clip_ids[i]]
+        if hash_i is None:
+            continue
         for j in range(i + 1, len(clip_ids)):
             if clip_ids[j] in duplicates:
                 continue
-            dist = _hamming_distance(clip_hashes[clip_ids[i]], clip_hashes[clip_ids[j]])
+            hash_j = clip_hashes[clip_ids[j]]
+            if hash_j is None:
+                continue
+            dist = _hamming_distance(hash_i, hash_j)
             if dist <= _DUPLICATE_THRESHOLD:
                 duplicates[clip_ids[j]] = clip_ids[i]
 
@@ -252,7 +259,7 @@ def analyze_vision(
     """Run vision analysis on all clips: keyframe extraction, hashing, scene classification."""
     results: list[VisionAnalysis] = []
     clip_frames: dict[str, list[Path]] = {}
-    clip_hashes_int: dict[str, int] = {}
+    clip_hashes_int: dict[str, int | None] = {}
 
     # Step 1: Extract keyframes and compute hashes
     print(f"  Vision: extracting keyframes for {len(clips)} clips...")
@@ -264,7 +271,7 @@ def analyze_vision(
             mid = frames[len(frames) // 2]
             clip_hashes_int[clip.id] = _compute_phash(mid)
         else:
-            clip_hashes_int[clip.id] = 0
+            clip_hashes_int[clip.id] = None
 
     # Step 2: Detect duplicates by perceptual hash similarity
     print(f"  Vision: detecting duplicates across {len(clip_hashes_int)} clips...")
@@ -276,7 +283,8 @@ def analyze_vision(
 
     for idx, clip in enumerate(clips):
         frames = clip_frames.get(clip.id, [])
-        phash_hex = _phash_hex(clip_hashes_int.get(clip.id, 0))
+        raw_hash = clip_hashes_int.get(clip.id)
+        phash_hex = _phash_hex(raw_hash if raw_hash is not None else 0)
         dup_of = duplicates.get(clip.id, "")
 
         if vision_backend == "openai" and frames:

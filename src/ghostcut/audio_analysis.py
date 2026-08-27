@@ -88,7 +88,7 @@ def analyze_audio_for_clip(clip: MediaClip) -> AudioAnalysis:
         ],
         check=False,
     )
-    silence_segments = extract_silence_segments(silence_run.stderr)
+    silence_segments = extract_silence_segments(silence_run.stderr, duration_s=clip.duration_s)
 
     astats_run = run_command(
         [

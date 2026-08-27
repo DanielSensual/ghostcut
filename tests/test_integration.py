@@ -10,10 +10,18 @@ from ghostcut.cli import main
 
 class IntegrationTests(unittest.TestCase):
     def test_end_to_end_run_generates_expected_artifacts(self) -> None:
-        repo_root = Path(__file__).resolve().parents[2]
-        source_sample = repo_root / "xai-video-test" / "streamable_daniel_8s.mp4"
+        repo_root = Path(__file__).resolve().parents[1]
+        examples = repo_root / "examples"
+        source_sample = next(
+            (
+                path
+                for path in sorted(examples.glob("*.mp4")) + sorted(examples.glob("*.mov"))
+                if path.is_file()
+            ),
+            examples / "sample.mp4",
+        )
         if not source_sample.exists():
-            self.skipTest(f"Missing sample file: {source_sample}")
+            self.skipTest("No sample media in examples/ (optional)")
 
         if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
             self.skipTest("ffmpeg/ffprobe not available")

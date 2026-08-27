@@ -92,6 +92,8 @@ def _refine_grid(
 
 def _downbeat(onset: np.ndarray, fps: float, first_beat_s: float, beat_s: float, hi_s: float) -> float:
     beats = np.arange(first_beat_s, hi_s, beat_s)
+    if len(beats) == 0:
+        return float(first_beat_s)
     strengths = []
     for b in beats:
         i = int(b * fps)
@@ -106,6 +108,8 @@ def analyze_song(song_path: str, chorus_hint_s: float | None = None) -> BeatGrid
     energy-based chorus search (the grid is refined locally around it)."""
     samples = _decode_mono(song_path)
     duration = len(samples) / _SR
+    if duration < 2.0 or len(samples) < _SR * 2:
+        raise ToolingError(f"Song is too short to analyze (need at least 2s): {song_path}")
     onset, fps = _onset_envelope(samples)
 
     bpm_coarse = _coarse_bpm(onset, fps)

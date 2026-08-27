@@ -90,27 +90,33 @@ def stabilize_segment(
     fps: int = 30,
 ) -> None:
     """Two-pass vid.stab; falls back to a plain conform when analysis fails."""
-    trf_path = str(Path(raw_path).with_suffix(".trf"))
-    quoted_raw = shlex.quote(raw_path)
+    work = Path(raw_path).parent
+    raw_name = Path(raw_path).name
+    out_name = Path(out_path).name
+    trf_name = Path(raw_path).with_suffix(".trf").name
     quoted_stab = shlex.quote(stab_ffmpeg)
 
+    # Run against basenames in the work dir so spaces/colons in the full path
+    # cannot break the shell pipeline or the vidstab filter argument.
     detect = (
-        f"ffmpeg -v error -i {quoted_raw} -f yuv4mpegpipe - | "
+        f"ffmpeg -v error -i {shlex.quote(raw_name)} -f yuv4mpegpipe - | "
         f"{quoted_stab} -v error -threads 1 -i - "
-        f"-vf vidstabdetect=shakiness=8:accuracy=15:mincontrast=0.25:result={shlex.quote(trf_path)} "
+        f"-vf vidstabdetect=shakiness=8:accuracy=15:mincontrast=0.25:result={trf_name} "
         f"-f null -"
     )
     transform = (
-        f"ffmpeg -v error -i {quoted_raw} -f yuv4mpegpipe - | "
+        f"ffmpeg -v error -i {shlex.quote(raw_name)} -f yuv4mpegpipe - | "
         f"{quoted_stab} -v error -threads 1 -i - "
-        f'-vf "vidstabtransform=input={trf_path}:smoothing={SMOOTHING}:maxshift={MAXSHIFT}:'
+        f'-vf "vidstabtransform=input={trf_name}:smoothing={SMOOTHING}:maxshift={MAXSHIFT}:'
         f"maxangle={MAXANGLE}:optzoom=0:crop=black:interpol=bicubic,"
         f'crop={width}:{height},fps={fps},setpts=PTS-STARTPTS,trim=duration={duration:.3f}" '
         f"-f yuv4mpegpipe - | "
-        f"ffmpeg -y -v error -i - -an -c:v libx264 -preset fast -crf 16 {shlex.quote(out_path)}"
+        f"ffmpeg -y -v error -i - -an -c:v libx264 -preset fast -crf 16 {shlex.quote(out_name)}"
     )
     for command in (detect, transform):
-        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+        result = subprocess.run(
+            command, shell=True, capture_output=True, text=True, cwd=work
+        )
         if result.returncode != 0:
             conform_segment(raw_path, out_path, width=width, height=height, duration=duration, fps=fps)
             return

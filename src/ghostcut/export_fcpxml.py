@@ -168,6 +168,7 @@ def export_fcpxml(
                 spine,
                 "transition",
                 attrib={
+                    "ref": dissolve_effect_id,
                     "name": "Cross Dissolve",
                     "offset": seconds_to_fcpxml_time(segment.timeline_in_s - _DISSOLVE_DURATION / 2, fps),
                     "duration": seconds_to_fcpxml_time(_DISSOLVE_DURATION, fps),

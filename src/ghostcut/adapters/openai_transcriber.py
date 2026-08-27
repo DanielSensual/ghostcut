@@ -8,7 +8,7 @@ from ..models import Transcript, TranscriptWord
 
 
 class OpenAITranscriber:
-    def __init__(self, model: str = "gpt-4o-mini-transcribe") -> None:
+    def __init__(self, model: str = "whisper-1") -> None:
         self.model = model
 
     def transcribe(self, audio_path: str, language: str) -> Transcript:
@@ -19,7 +19,7 @@ class OpenAITranscriber:
         try:
             from openai import OpenAI
         except Exception as error:  # pragma: no cover - optional dependency guard
-            raise RuntimeError("OpenAI SDK is not installed. Run: pip install -e .[openai]") from error
+            raise RuntimeError('OpenAI SDK is not installed. Run: pip install -e ".[openai]"') from error
 
         client = OpenAI(api_key=api_key)
         clip_id = Path(audio_path).stem

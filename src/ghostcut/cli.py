@@ -19,7 +19,7 @@ from .config import (
 )
 from .export_fcpxml import export_fcpxml
 from .export_otio import export_otio
-from .ffmpeg_tools import ToolingError
+from .ffmpeg_tools import ToolingError, require_ffmpeg_binaries
 from .ingest import ingest_media
 from .models import (
     AudioAnalysis,
@@ -152,6 +152,7 @@ def _load_vision_analysis(project_dir: Path) -> list[VisionAnalysis]:
 
 
 def command_analyze(args: argparse.Namespace) -> dict:
+    require_ffmpeg_binaries()
     project_dir = Path(args.project).expanduser().resolve()
     paths = make_project_paths(project_dir)
     clips = _load_clips(project_dir)
@@ -379,13 +380,18 @@ def command_recap(args: argparse.Namespace) -> dict:
         from .recap.select import RecapCandidate, augment_with_cast, build_candidates
     except ImportError as error:
         raise RuntimeError(
-            "Recap mode needs the [recap] extra: pip install -e .[recap]"
+            'Recap mode needs the [recap] extra: pip install -e ".[recap]"'
         ) from error
     from .ffmpeg_tools import extract_media_stats, probe_media
 
+    require_ffmpeg_binaries()
     footage_files = [str(Path(f).expanduser().resolve()) for f in args.footage]
     song = str(Path(args.song).expanduser().resolve())
+    exclude_clips = [str(Path(clip).expanduser().resolve()) for clip in (args.exclude_clip or [])]
     output = Path(args.output).expanduser().resolve()
+    missing = [path for path in [*footage_files, song, *exclude_clips] if not Path(path).is_file()]
+    if missing:
+        raise FileNotFoundError("Media file not found: " + ", ".join(missing))
     work_dir = (
         Path(args.work_dir).expanduser().resolve()
         if args.work_dir
@@ -415,11 +421,10 @@ def command_recap(args: argparse.Namespace) -> dict:
         print(f"Reusing footage analysis from {work_dir} ({len(candidates)} candidates); --fresh to recompute")
     else:
         reference = []
-        for clip in args.exclude_clip or []:
-            clip_path = str(Path(clip).expanduser().resolve())
+        for clip_path in exclude_clips:
             vectors = engine.build_reference(clip_path)
             reference.extend(vectors)
-            print(f"Exclusion reference: {len(vectors)} face samples from {Path(clip).name}")
+            print(f"Exclusion reference: {len(vectors)} face samples from {Path(clip_path).name}")
 
         # analyze each event file independently; people are treated as distinct
         # per file (cluster_offset keeps ids unique) and candidates carry their
@@ -533,7 +538,7 @@ def build_parser() -> argparse.ArgumentParser:
     assemble_parser.add_argument("--target-duration", type=int, default=DEFAULT_TARGET_DURATION)
     assemble_parser.set_defaults(func=command_assemble)
 
-    export_parser = sub.add_parser("export", help="Export Final Cut Pro fcpxml")
+    export_parser = sub.add_parser("export", help="Export FCPXML and OTIO timelines")
     export_parser.add_argument("--project", required=True)
     export_parser.set_defaults(func=command_export)
 

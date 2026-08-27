@@ -28,9 +28,9 @@ Built by [Ghost AI Systems](https://ghostaisystems.com).
 git clone https://github.com/DanielSensual/ghostcut.git
 cd ghostcut
 python3 -m venv .venv && source .venv/bin/activate
-pip install -e .            # core: zero dependencies
-pip install -e .[recap]     # + opencv/numpy for recap reels
-pip install -e .[openai]    # + OpenAI Whisper API transcription (optional)
+pip install -e .              # core: zero dependencies
+pip install -e ".[recap]"     # + opencv/numpy for recap reels
+pip install -e ".[openai]"    # + OpenAI Whisper API transcription (optional)
 ```
 
 ## Rough-cut pipeline
@@ -73,13 +73,13 @@ Word-by-word highlight captions with an active-word color-and-scale pop:
 
 ```bash
 # Local word timestamps (recommended): any Whisper with word timestamps, e.g.
-mlx_whisper --word-timestamps True final-cut.mp4   # then flatten to {words:[{word,start,end}]}
+mlx_whisper --word-timestamps True final-cut.mp4   # accepts {words:[...]} or segments[].words
 
 node scripts/ghost-captions.cjs --video final-cut.mp4 --words words.json --output captioned.mp4
-node scripts/ghost-captions.cjs --video final-cut.mp4 --ass-only --output captions.ass   # for FCP/Resolve
+node scripts/ghost-captions.cjs --video final-cut.mp4 --words words.json --ass-only --output captions.ass   # for FCP/Resolve
 ```
 
-Styles: `captions`, `hormozi`, `neon`, `fire`, `ghost`, `bold`, `minimal` — plus `--highlight` color presets, `--grouping 2|3|4` words, `--position`, `--pop` scale. Without `--words` it transcribes via the OpenAI Whisper API (`OPENAI_API_KEY` required); with `--words` it runs fully offline. Run captions on the **final** cut, not source clips — trims shift word timing.
+Styles: `captions`, `hormozi`, `neon`, `fire`, `ghost`, `bold`, `minimal` — plus `--highlight` color presets, `--grouping` words per group (default 5 for `captions`, 3 otherwise), `--position`, `--pop` scale. Without `--words` it transcribes via the OpenAI Whisper API (`OPENAI_API_KEY` required); with `--words` it runs fully offline. Run captions on the **final** cut, not source clips — trims shift word timing.
 
 ## Output structure
 

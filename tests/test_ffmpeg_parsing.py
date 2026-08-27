@@ -15,6 +15,18 @@ class FFmpegParsingTests(unittest.TestCase):
         """
         self.assertEqual(extract_silence_segments(stderr), [(0.5, 1.25), (2.0, 3.5)])
 
+    def test_extract_silence_segments_trailing_to_eof(self) -> None:
+        stderr = """
+        [silencedetect @ 0x1] silence_start: 0.500
+        [silencedetect @ 0x1] silence_end: 1.250 | silence_duration: 0.750
+        [silencedetect @ 0x1] silence_start: 4.000
+        """
+        self.assertEqual(extract_silence_segments(stderr), [(0.5, 1.25)])
+        self.assertEqual(
+            extract_silence_segments(stderr, duration_s=5.0),
+            [(0.5, 1.25), (4.0, 5.0)],
+        )
+
     def test_extract_scene_change_pts(self) -> None:
         stderr = "showinfo pts_time:0.333\nshowinfo pts_time:1.667\n"
         self.assertEqual(extract_scene_change_pts(stderr), [0.333, 1.667])
