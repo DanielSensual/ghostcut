@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from .ffmpeg_tools import snap_frame_rate
 from .models import BrollOverlay, MediaClip, TimelineSegment
 
 
@@ -52,11 +53,22 @@ def _gap_node(duration_s: float, fps: float) -> dict:
 
 
 def _build_v1_track(clips_by_id: dict[str, MediaClip], timeline_segments: list[TimelineSegment], fps: float) -> dict:
+    """Primary track: clips land at their timeline_in_s, with explicit gaps between them."""
     children: list[dict] = []
+    cursor = 0.0
+    half_frame = 0.5 / fps
     for segment in sorted(timeline_segments, key=lambda item: item.timeline_in_s):
         clip = clips_by_id.get(segment.clip_id)
         if not clip:
             continue
+        if segment.timeline_in_s < cursor - half_frame:
+            raise ValueError(
+                f"Overlapping primary segments: {segment.clip_id} starts at {segment.timeline_in_s:.3f}s, "
+                f"before the previous segment ends at {cursor:.3f}s"
+            )
+        if segment.timeline_in_s > cursor + half_frame:
+            children.append(_gap_node(segment.timeline_in_s - cursor, fps))
+        cursor = segment.timeline_in_s + max(0.0, segment.src_out_s - segment.src_in_s)
         children.append(
             _clip_node(
                 name=f"{segment.section} | {Path(clip.source_path).name}",
@@ -137,7 +149,7 @@ def export_otio(
 ) -> dict:
     clips_by_id = {clip.id: clip for clip in clips}
     dominant_fps = 30.0
-    fps_values = [round(clip.fps) for clip in clips if clip.fps > 0]
+    fps_values = [snap_frame_rate(clip.fps) for clip in clips if clip.fps > 0]
     if fps_values:
         dominant_fps = float(sorted(fps_values)[len(fps_values) // 2])
 

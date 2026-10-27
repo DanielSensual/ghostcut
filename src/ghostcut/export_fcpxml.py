@@ -4,7 +4,7 @@ from collections import Counter
 from pathlib import Path
 from xml.etree import ElementTree as ET
 
-from .ffmpeg_tools import seconds_to_fcpxml_time
+from .ffmpeg_tools import seconds_to_fcpxml_time, snap_frame_rate
 from .models import BrollOverlay, MediaClip, TimelineSegment
 
 # Cross-dissolve duration in seconds added between different sections.
@@ -12,7 +12,7 @@ _DISSOLVE_DURATION = 0.5
 
 
 def _dominant_fps(clips: list[MediaClip]) -> float:
-    fps_values = [int(round(clip.fps)) for clip in clips if clip.fps > 0]
+    fps_values = [snap_frame_rate(clip.fps) for clip in clips if clip.fps > 0]
     if not fps_values:
         return 30.0
     return float(Counter(fps_values).most_common(1)[0][0])
@@ -97,10 +97,35 @@ def export_fcpxml(
         },
     )
 
+    # Each source keeps its own rate and size; the sequence format is only reused when they match.
+    sequence_key = (snap_frame_rate(fps), width, height)
+    format_ids: dict[tuple, str] = {sequence_key: format_id}
+
+    def source_format(clip: MediaClip) -> str:
+        if clip.fps <= 0 or clip.width <= 0 or clip.height <= 0:
+            return format_id
+        key = (snap_frame_rate(clip.fps), clip.width, clip.height)
+        if key not in format_ids:
+            format_ids[key] = f"f{len(format_ids)}"
+            ET.SubElement(
+                resources,
+                "format",
+                attrib={
+                    "id": format_ids[key],
+                    "frameDuration": seconds_to_fcpxml_time(1.0 / clip.fps, clip.fps),
+                    "width": str(clip.width),
+                    "height": str(clip.height),
+                    "colorSpace": "1-1-1 (Rec. 709)",
+                },
+            )
+        return format_ids[key]
+
     asset_ref: dict[str, str] = {}
     for idx, clip in enumerate(used_clips, start=2):
         asset_id = f"r{idx}"
         asset_ref[clip.id] = asset_id
+        asset_format = source_format(clip)
+        asset_fps = clip.fps if asset_format != format_id else fps
         source_uri = Path(clip.source_path).resolve().as_uri()
         asset_el = ET.SubElement(
             resources,
@@ -110,10 +135,10 @@ def export_fcpxml(
                 "name": Path(clip.source_path).name,
                 "uid": clip.id,
                 "start": "0s",
-                "duration": seconds_to_fcpxml_time(clip.duration_s, fps),
+                "duration": seconds_to_fcpxml_time(clip.duration_s, asset_fps),
                 "hasVideo": "1",
                 "hasAudio": "1" if clip.has_audio else "0",
-                "format": format_id,
+                "format": asset_format,
             },
         )
         ET.SubElement(
@@ -163,17 +188,18 @@ def export_fcpxml(
         duration_s = max(0.0, segment.src_out_s - segment.src_in_s)
 
         # Insert cross-dissolve when section changes
+        # (the effect is referenced by a child filter-video; <transition> itself has no ref attribute)
         if previous_section is not None and segment.section != previous_section:
-            ET.SubElement(
+            transition = ET.SubElement(
                 spine,
                 "transition",
                 attrib={
-                    "ref": dissolve_effect_id,
                     "name": "Cross Dissolve",
                     "offset": seconds_to_fcpxml_time(segment.timeline_in_s - _DISSOLVE_DURATION / 2, fps),
                     "duration": seconds_to_fcpxml_time(_DISSOLVE_DURATION, fps),
                 },
             )
+            ET.SubElement(transition, "filter-video", attrib={"ref": dissolve_effect_id, "name": "Cross Dissolve"})
 
         # Determine audio role based on layer
         clip_layer = getattr(clip, "layer", "a-roll")

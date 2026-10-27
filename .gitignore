@@ -23,3 +23,8 @@ timeline/
 reports/
 proxies/
 audio/
+
+# Credentials (never commit)
+.env
+.env.*
+*.meta-api.env

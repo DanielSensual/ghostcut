@@ -4,6 +4,7 @@ import json
 import re
 import shutil
 import subprocess
+from fractions import Fraction
 from pathlib import Path
 
 
@@ -120,7 +121,24 @@ def extract_scene_change_pts(stderr: str) -> list[float]:
     return [float(value) for value in re.findall(r"pts_time:([\d\.]+)", stderr)]
 
 
+_NTSC_BASES = (24, 30, 48, 60, 120)
+
+
+def snap_frame_rate(fps: float) -> Fraction:
+    """Exact frame rate: 23.976 -> 24000/1001, 29.97 -> 30000/1001, 25.0 -> 25."""
+    if not fps or fps <= 0:
+        return Fraction(30)
+    for base in _NTSC_BASES:
+        ntsc = Fraction(base * 1000, 1001)
+        if abs(fps - float(ntsc)) < 0.005:
+            return ntsc
+    if abs(fps - round(fps)) < 0.005:
+        return Fraction(round(fps))
+    return Fraction(fps).limit_denominator(1001)
+
+
 def seconds_to_fcpxml_time(seconds: float, fps: float) -> str:
-    safe_fps = int(round(fps)) if fps and fps > 0 else 30
-    frames = max(0, int(round(seconds * safe_fps)))
-    return f"{frames}/{safe_fps}s"
+    """Seconds as an FCPXML rational on the frame grid, e.g. 2 s at 23.976 -> '48048/24000s'."""
+    frame = 1 / snap_frame_rate(fps)
+    frames = max(0, int(round(seconds / frame)))
+    return f"{frames * frame.numerator}/{frame.denominator}s"
