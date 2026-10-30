@@ -6,7 +6,7 @@
 
 **AI-assisted video editing that ends in your NLE, not a black box.**
 
-GhostCut is an open-source editing pipeline built on ffmpeg and pure Python (zero required dependencies). It does the tedious 80% — ingest, proxies, analysis, shot selection, rough assembly — and hands you editable timelines, finished beat-synced reels, or viral-style captions.
+GhostCut is an open-source editing pipeline built on ffmpeg and pure Python (the core has zero required dependencies). It does the tedious 80% — ingest, proxies, analysis, shot selection, rough assembly — and hands you editable timelines, finished beat-synced reels, or viral-style captions.
 
 Three tools in one repo:
 
@@ -16,9 +16,51 @@ Three tools in one repo:
 
 Built by [Ghost AI Systems](https://ghostaisystems.com).
 
+## Meta Global AI Developer Hackathon (Oct 26 – Nov 4, 2026): what is new
+
+**GhostCut Director** is the hackathon project. It turns a shoot day into an organized, cut, B-rolled video and
+explains every decision, using Meta's Muse models.
+
+**Pre-existing (before the event, not part of the entry's new work):**
+- GhostCut itself: developed privately from 2026-02-11 (that history is not published), public since 2026-07-27 (`8472e7b`, v0.2.0),
+  last pre-event commit 2026-08-27 (`53004e6`). Everything described below this section — the rough-cut
+  pipeline, recap reels, Ghost Captions, and the FCPXML/OTIO exporters and data classes that Director reuses.
+
+**Built during the event:**
+- [`guestlist.meta`](https://github.com/DanielSensual/guestlist) (first commit 2026-10-26 14:46 ET): cached Meta
+  Model API clients, the spend ledger and its hard budget stop.
+- `scripts/director_spike_takes.py` (2026-10-27): Spark take-log spike scored against a hand log.
+- `scripts/director_test_run.py` (committed 2026-10-27/28, changed since): organize, cut, refine, B-roll planning
+  and render, QC, cold open, fact cards, music mix; plus fixes to the pre-existing exporter (2026-10-27).
+- `app/` (2026-10-29): the Director Mac app — engine, Muse edit proposals with mechanical checks, an
+  accept/undo edit layer, transcript, timeline UI — and `tests/test_app_muse.py`.
+
+**Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits),
+`muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
+Director does not use SAM 3.1 or SAM Audio.
+**Non-Meta tools:** local Whisper (`mlx-whisper`), ffmpeg, pywebview, and in the sample film ElevenLabs
+(music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
+used an AI coding assistant (Claude Code; see commit trailers).
+
+**Not built yet:** rendering accepted Muse edits, the live shoot-date import scan, the Deliver export
+buttons, SAM Audio remastering.
+**Not in this repo yet:** the work-dir prep (360p proxy, `clip_map.json`, Whisper SRT and words) that `organize`
+reads; the Spark footage inventory, the Wonder opening review and the Voice Transcribe check were one-off calls
+during development.
+**Sample project:** the app is shown with a project built locally by `app/make_demo.py` from a finished client job.
+It is not in the repo (`app/ui/demo/` is gitignored), so a fresh clone opens the app with no project. The sample's
+opening chat, review findings, media bins and spend rows are hand-written examples, labeled as such in the UI.
+
+**Running Director:** macOS on Apple Silicon (mlx-whisper, the system Avenir Next font, pywebview), ffmpeg, and
+`pip install numpy pillow pywebview mlx-whisper`. Meta calls go through
+[guestlist](https://github.com/DanielSensual/guestlist) (`pip install -e` a checkout of it) with a Meta Model API
+key in `MODEL_API_KEY`; `mix --isolate` also needs `ELEVENLABS_API_KEY`. Without guestlist the app still opens and
+Muse answers with an error.
+Design, status and how to run it: [docs/APP-DESIGN.md](docs/APP-DESIGN.md).
+
 ## Requirements
 
-- `ffmpeg` + `ffprobe` on PATH (macOS/Linux)
+- `ffmpeg` + `ffprobe` on PATH (macOS/Linux; GhostCut Director needs macOS on Apple Silicon, see above)
 - Python ≥ 3.11
 - Optional: Node.js for Ghost Captions, `[recap]` extra for recap reels
 
@@ -113,4 +155,5 @@ Issues and PRs welcome.
 
 ## License
 
-[MIT](LICENSE) © 2026 Daniel Castillo (Ghost AI Systems)
+[MIT](LICENSE) © 2026 Daniel Castillo (Ghost AI Systems). The GhostCut name and the artwork in `docs/brand/` are
+not covered by the MIT License; see [docs/brand/NOTICE.md](docs/brand/NOTICE.md).

@@ -7,7 +7,7 @@ from 2026-10-02, built from Whisper + review).
 
 Runs with Guestlist's Meta client (shared cache + spend ledger):
 
-    ~/Projects/guestlist/.venv/bin/python scripts/director_spike_takes.py <proxy.mp4> [--out docs/spike-takes-day1.json]
+    python scripts/director_spike_takes.py <proxy.mp4> [--out docs/spike-takes-day1.json]   # a Python with guestlist.meta
 
 Re-runs are free: the Spark call is cached by (video hash, prompts, schema).
 """
@@ -17,10 +17,12 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import os
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path.home() / "Projects/guestlist/src"))
+if os.environ.get("GUESTLIST_SRC"):  # a guestlist checkout instead of an installed package
+    sys.path.insert(0, os.environ["GUESTLIST_SRC"])
 from guestlist.meta import spark  # noqa: E402
 
 KINDS = ["keeper_take", "alternate_take", "flub_or_false_start", "off_camera_or_pause",

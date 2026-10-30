@@ -2,8 +2,8 @@
 
 Inputs come from a work dir prepared by the proxy step (all_takes_proxy.mp4, clip_map.json, all_takes.srt):
 
-    ~/Projects/guestlist/.venv/bin/python scripts/director_test_run.py organize <workdir>
-    ~/Projects/guestlist/.venv/bin/python scripts/director_test_run.py cut <workdir>
+    python scripts/director_test_run.py organize <workdir>     # a Python with guestlist.meta installed
+    python scripts/director_test_run.py cut <workdir>
 
 organize calls muse-spark-1.3 once (cached by video hash + prompt), cut/export are local and free.
 Spark judges delivery from picture + sound; Whisper lines supply every time (mode B from the Day-1 spike).
@@ -777,7 +777,7 @@ def _ramp(source: Path, start: float, legs: list[list[float]], out: Path, fps: f
 
 
 def intro(work: Path, spec_file: Path) -> None:
-    """Cinematic cold open (tour-cinematic-intro skill): shots with slow push-ins, a title card, the hook line.
+    """Cinematic cold open: shots with slow push-ins, a title card, the hook line.
     spec: {"shots": [{"source", "start", "end", "push": 1.07, "speed": 0.5 | "ramp": [[secs, v0, v1], ...]}], "title": {"lines": [..], "at": s, "until": s},
            "hook": {"source", "start", "end", "at": s}}  -> intro/intro.mp4 (same format as the tour cut)."""
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -843,6 +843,114 @@ def intro(work: Path, spec_file: Path) -> None:
     print(json.dumps({"intro": str(out), "seconds": round(total, 2)}))
 
 
+def _ping(sr: int = 48000):
+    """Soft two-note notification chime (G6 then C7, 70 ms apart) with a short bell decay."""
+    import numpy as np
+
+    t = np.arange(int(sr * 0.9)) / sr
+    out = np.zeros_like(t)
+    for f, delay, amp in ((1567.98, 0.0, 1.0), (2093.0, 0.07, 0.8)):
+        tt = np.clip(t - delay, 0, None)
+        env = np.where(t >= delay, (1 - np.exp(-tt / 0.003)) * np.exp(-tt / 0.18), 0)
+        out += amp * env * (np.sin(2 * np.pi * f * tt) + 0.25 * np.sin(2 * np.pi * 2 * f * tt) * np.exp(-tt / 0.05))
+    return out / np.abs(out).max()
+
+
+def _whoosh(sr: int = 48000, dur: float = 0.35):
+    """Airy slide-in whoosh: noise through a band-pass sweeping up, swelling into the card's landing."""
+    import numpy as np
+
+    rng = np.random.default_rng(7)
+    n = int(sr * dur)
+    noise = rng.standard_normal(n)
+    out, lo = np.zeros(n), 0.0
+    for i in range(n):  # one-pole low-pass whose cutoff sweeps 400 Hz -> 5 kHz
+        fc = 400 * (5000 / 400) ** (i / n)
+        lo += (1 - np.exp(-2 * np.pi * fc / sr)) * (noise[i] - lo)
+        out[i] = lo
+    out -= np.convolve(out, np.ones(48) / 48, "same")  # drop the rumble
+    env = np.sin(np.pi * np.linspace(0, 1, n) ** 0.7) ** 2
+    out *= env
+    return out / np.abs(out).max()
+
+
+def facts(work: Path, video: Path, spec_file: Path, out: Path) -> Path:
+    """On-screen fact cards (only what the agent says on camera): each line slides in on the word that states it, with
+    a soft chime; the first line of a card also gets a whoosh. Picture is re-encoded with the cards, audio copied, and
+    the effects are written next to `out` as <out>.sfx.wav for the mix step (kept out of the voice so isolation and
+    ducking never touch them).
+    spec: {"accent": [r, g, b]?, "cards": [{"until": s, "caption": "SMALL LABEL", "size": 60, "lines": [["TEXT", at_s], ...]}]}"""
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+    spec = json.loads(spec_file.read_text())
+    fdir = work / "facts"
+    fdir.mkdir(exist_ok=True)
+    accent = tuple(spec.get("accent", [196, 98, 62])) + (255,)  # default: warm terracotta
+
+    def png(text: str, size: int, name: str, bar: bool) -> tuple[Path, int, int]:
+        font = ImageFont.truetype("/System/Library/Fonts/Avenir Next.ttc", size, index=2)
+        w, h = (int(v) for v in font.getbbox(text)[2:])
+        pad, x0 = 24, (22 if bar else 0)
+        img = Image.new("RGBA", (w + x0 + 2 * pad, h + 2 * pad), (0, 0, 0, 0))
+        shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(shadow).text((pad + x0, pad), text, font=font, fill=(0, 0, 0, 230))
+        img = Image.alpha_composite(shadow.filter(ImageFilter.GaussianBlur(9)), img)
+        d = ImageDraw.Draw(img)
+        # Translucent dark panel behind the text: readable on white web pages as well as sky and walls.
+        d.rounded_rectangle((pad - 14, pad - int(h * 0.18), img.width - pad + 14, pad + h + int(h * 0.22)), radius=10,
+                            fill=(10, 10, 10, 150))
+        if bar:
+            d.rectangle((pad, pad + int(h * 0.12), pad + 7, pad + h), fill=accent)
+        d.text((pad + x0, pad), text, font=font, fill=(255, 255, 255, 255) if bar else (255, 236, 222, 255))
+        f = fdir / f"{name}.png"
+        img.save(f)
+        return f, img.width, img.height
+
+    items = []  # (png, x, y, at, until)
+    sfx_at = []  # (time, kind)
+    for c, card in enumerate(spec["cards"]):
+        size = card.get("size", 60)
+        lines = [png(text, size, f"c{c}l{k}", True) + (at,) for k, (text, at) in enumerate(card["lines"])]
+        cap = png(card["caption"], 38, f"c{c}cap", False) + (card["lines"][0][1],) if card.get("caption") else None
+        y = 1080 - 110 - sum(h - 34 for _, _, h, _ in lines)
+        if cap:
+            items.append((cap[0], 96, y - cap[2] + 22, cap[3], card["until"]))
+        for f, _, h, at in lines:
+            items.append((f, 96, y, at, card["until"]))
+            sfx_at.append((at, "ping"))
+            y += h - 34
+        sfx_at.append((card["lines"][0][1] - 0.2, "whoosh"))
+
+    inputs, chain, last = ["-i", str(video)], [], "0:v"
+    for k, (f, x, y, a, u) in enumerate(items, 1):
+        inputs += ["-loop", "1", "-framerate", "60000/1001", "-t", f"{u - a:.3f}", "-i", str(f)]
+        chain.append(f"[{k}:v]format=rgba,fade=t=in:d=0.25:alpha=1,fade=t=out:st={u - a - 0.35:.3f}:d=0.35:alpha=1,"
+                     f"setpts=PTS+{a:.3f}/TB[f{k}]")
+        chain.append(f"[{last}][f{k}]overlay=x='{x}-36*pow(max(0\\,1-(t-{a:.3f})/0.3)\\,2)':y={y}:"
+                     f"enable='between(t,{a:.3f},{u:.3f})':eof_action=pass[v{k}]")
+        last = f"v{k}"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(chain), "-map", f"[{last}]",
+                    "-map", "0:a", "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-r", "60000/1001", "-pix_fmt",
+                    "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(out)], check=True)
+
+    sr = 48000
+    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
+                               capture_output=True, text=True).stdout)
+    bed = np.zeros(int(dur * sr) + sr)
+    sounds = {"ping": _ping(sr) * 10 ** (-17 / 20), "whoosh": _whoosh(sr) * 10 ** (-26 / 20)}
+    for at, kind in sfx_at:
+        s = sounds[kind]
+        i = max(0, int(at * sr))
+        bed[i:i + len(s)] += s[: len(bed) - i]
+    sfx = out.with_suffix(".sfx.wav")
+    stereo = np.repeat(bed[: int(dur * sr)].astype(np.float32)[:, None], 2, 1)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "f32le", "-ar", str(sr), "-ac", "2", "-i", "-", str(sfx)],
+                   input=stereo.tobytes(), check=True)
+    print(json.dumps({"cards": len(spec["cards"]), "overlays": len(items), "sfx": len(sfx_at), "out": str(out)}))
+    return sfx
+
+
 def _lufs(path: Path, extra: list[str] | None = None) -> float:
     out = subprocess.run(["ffmpeg", "-nostats", *(extra or []), "-i", str(path), "-vn", "-af", "ebur128", "-f", "null", "-"],
                          capture_output=True, text=True).stderr
@@ -893,7 +1001,7 @@ def _isolate_voice(video: Path, a: float, b: float, out: Path) -> Path:
 
 
 def mix(work: Path, video: Path, music: Path, out: Path, under: float = 20.0, intro: float = 0.0,
-        isolate: tuple[float, float] | None = None) -> None:
+        isolate: tuple[float, float] | None = None, sfx: Path | None = None) -> None:
     """Music bed under the voice: looped with 2 s crossfades, set `under` LU below the voice, ducked further while
     she talks (sidechain), faded in/out; voice gets an 80 Hz high-pass (wind/handling rumble). Picture is copied."""
     dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
@@ -912,8 +1020,10 @@ def mix(work: Path, video: Path, music: Path, out: Path, under: float = 20.0, in
     graph = (f"[0:a]highpass=f=80,asplit=2[v][key];[1:a]volume={gain:.2f}dB,"
              f"volume='if(lt(t,{intro:.3f}),{lift:.4f},1)':eval=frame[m];"
              "[m][key]sidechaincompress=threshold=0.05:ratio=4:attack=30:release=500[md];"
-             "[v][md]amix=inputs=2:duration=first:normalize=0,loudnorm=I=-14:TP=-1.5:LRA=11[a]")
-    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(voice), "-i", str(bed), "-i", str(video), "-filter_complex", graph,
+             f"[v][md]{'[3:a]' if sfx else ''}amix=inputs={3 if sfx else 2}:duration=first:normalize=0,"
+             "loudnorm=I=-14:TP=-1.5:LRA=11[a]")  # fact-card chimes (sfx) sit beside the voice, never key the duck
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(voice), "-i", str(bed), "-i", str(video),
+                    *(["-i", str(sfx)] if sfx else []), "-filter_complex", graph,
                     "-map", "2:v", "-map", "[a]", "-c:v", "copy", "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
                     "-movflags", "+faststart", str(out)], check=True)
     print(json.dumps({"music_gain_db": round(gain, 1), "copies": copies, "out": str(out), "lufs": _lufs(out)}))
@@ -921,7 +1031,7 @@ def mix(work: Path, video: Path, music: Path, out: Path, under: float = 20.0, in
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("step", choices=["organize", "cut", "refine", "broll-proxy", "broll", "intro", "mix", "qa"])
+    ap.add_argument("step", choices=["organize", "cut", "refine", "broll-proxy", "broll", "intro", "facts", "mix", "qa"])
     ap.add_argument("work", type=Path)
     ap.add_argument("--effort", default="medium")
     ap.add_argument("--broll-dir", type=Path, action="append", default=[], help="B-roll folder (repeatable)")
@@ -942,6 +1052,7 @@ def main() -> None:
     ap.add_argument("--cues", type=Path, help="broll: narration .srt (default: the newest ghostcut_test_v*.srt)")
     ap.add_argument("--isolate", default="", help="mix: A-B seconds of voice to clean with ElevenLabs voice isolation")
     ap.add_argument("--retime", default="", help="broll: at=dt pairs, timeline seconds cut (dt<0) since the reused plan")
+    ap.add_argument("--sfx", type=Path, help="mix: effects track (from the facts step) laid beside the voice")
     ap.add_argument("--intro-len", type=float, default=0.0, help="mix: seconds of cold open at the start (music lifted)")
     args = ap.parse_args()
     {"organize": lambda: organize(args.work, args.effort), "cut": lambda: cut(args.work, args.pieces), "refine": lambda: refine(args.work, args.words),
@@ -953,8 +1064,9 @@ def main() -> None:
                             args.reuse_plan, args.cues,
                             tuple(tuple(float(x) for x in r.split("=")) for r in filter(None, args.retime.split(",")))),
      "intro": lambda: intro(args.work, args.spec),
+     "facts": lambda: facts(args.work, args.video, args.spec, args.out),
      "mix": lambda: mix(args.work, args.video, args.music, args.out, intro=args.intro_len,
-                        isolate=tuple(float(x) for x in args.isolate.split("-")) if args.isolate else None),
+                        isolate=tuple(float(x) for x in args.isolate.split("-")) if args.isolate else None, sfx=args.sfx),
      "qa": lambda: qa(args.work, args.video, args.model, args.effort)}[args.step]()
 
 

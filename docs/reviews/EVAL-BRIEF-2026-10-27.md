@@ -1,5 +1,9 @@
 # GhostCut Director: independent evaluation brief (2026-10-27)
 
+> **Note (2026-10-30):** the review covered `tools/handoff/`, exporters copied in from two client jobs. They are
+> not part of Director and were kept out of the public repository. The reviewers' raw notes named here were not
+> committed.
+
 Two outside reviewers, then the notes come back to Claude Code for final revisions:
 - **Codex** (has this repo): code + plan review. Prompt A.
 - **ChatGPT Astra** (no repo): strategy + plan review from attached files. Prompt B.

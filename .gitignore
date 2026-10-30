@@ -28,3 +28,4 @@ audio/
 .env
 .env.*
 *.meta-api.env
+app/ui/demo/
