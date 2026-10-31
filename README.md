@@ -34,6 +34,11 @@ explains every decision, using Meta's Muse models.
   and render, QC, cold open, fact cards, music mix; plus fixes to the pre-existing exporter (2026-10-27).
 - `app/` (2026-10-29): the Director Mac app — engine, Muse edit proposals with mechanical checks, an
   accept/undo edit layer, transcript, timeline UI — and `tests/test_app_muse.py`.
+- Render v1 (2026-10-30): `app/render.py`, `render_plan.py`, `render_voice.py`, `render_verify.py`, the render
+  endpoints and UI in the app, and `tests/test_render_*.py`, `test_engine_render.py`,
+  `test_make_demo_timeline.py`. It re-renders only the sections that accepted edits touch, rebuilds the voice
+  sample-exact from the section audio and the cached voice isolation (no paid call), redoes the fact cards, music
+  mix and phone copy, and promotes the new version only after its measured checks pass. Revert goes back one version.
 
 **Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits),
 `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
@@ -42,8 +47,8 @@ Director does not use SAM 3.1 or SAM Audio.
 (music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
 used an AI coding assistant (Claude Code; see commit trailers).
 
-**Not built yet:** rendering accepted Muse edits, the live shoot-date import scan, the Deliver export
-buttons, SAM Audio remastering.
+**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), the live shoot-date import scan, the
+Deliver export buttons, SAM Audio remastering.
 **Not in this repo yet:** the work-dir prep (360p proxy, `clip_map.json`, Whisper SRT and words) that `organize`
 reads; the Spark footage inventory, the Wonder opening review and the Voice Transcribe check were one-off calls
 during development.
@@ -55,7 +60,8 @@ opening chat, review findings, media bins and spend rows are hand-written exampl
 `pip install numpy pillow pywebview mlx-whisper`. Meta calls go through
 [guestlist](https://github.com/DanielSensual/guestlist) (`pip install -e` a checkout of it) with a Meta Model API
 key in `MODEL_API_KEY`; `mix --isolate` also needs `ELEVENLABS_API_KEY`. Without guestlist the app still opens and
-Muse answers with an error.
+Muse answers with an error. Render needs no key: `python app/render.py plan` shows what the next render would do,
+`run` renders it, `revert` goes back (the app's Render button does the same).
 Design, status and how to run it: [docs/APP-DESIGN.md](docs/APP-DESIGN.md).
 
 ## Requirements

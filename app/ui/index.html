@@ -49,9 +49,17 @@
       <span class="where" id="where"></span>
       <span class="grow"></span>
       <span class="pending" id="pending" hidden><i></i><b id="pendingN"></b> waiting to render
-        <button id="undoLast">Undo last</button>
-        <button id="renderBtn" disabled title="Rendering accepted changes through the engine is the next build step">Render</button></span>
+        <button id="undoLast" data-busy="undo">Undo last</button></span>
+      <span class="ver" id="verChip" hidden></span>
+      <button class="renderbtn" id="renderBtn" disabled>Render</button>
       <label class="zoom">Zoom <input type="range" id="zoom" min="1" max="12" step="0.5" value="1"></label>
+    </div>
+    <div class="renderbar" id="renderBar" hidden>
+      <div class="fill" id="renderFill"></div>
+      <span class="rtext" id="renderText"></span>
+      <span class="grow"></span>
+      <span class="reta" id="renderEta"></span>
+      <span class="racts" id="renderActs"></span>
     </div>
     <div class="timeline" id="timeline">
       <div class="labels">
@@ -114,6 +122,14 @@
 <main class="view page" id="view-story" hidden></main>
 <main class="view page" id="view-import" hidden></main>
 <main class="view page" id="view-deliver" hidden></main>
+
+<div class="modal" id="renderDlg" hidden>
+  <div class="dlg" role="dialog" aria-modal="true" aria-labelledby="renderDlgTitle">
+    <h3 id="renderDlgTitle">Render</h3>
+    <div id="renderDlgBody"></div>
+    <div class="dlg-acts"><button id="renderDlgClose">Close</button><button class="primary" id="renderStart" disabled>Start</button></div>
+  </div>
+</div>
 
 <script src="demo/project.js"></script>
 <script src="app.js"></script>

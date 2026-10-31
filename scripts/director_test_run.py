@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import types
@@ -21,7 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-from director_spike_takes import DEVELOPER, LINES_SCHEMA, parse_srt  # noqa: E402
+# director_spike_takes imports guestlist (Spark): it is imported inside the steps that need it, so Render can import
+# this module without it.
 
 PROMPT = """These are a real-estate agent's raw on-camera clips for ONE YouTube house tour, joined end to end in shooting
 order. She walks the home and talks to camera about the community, each room and its features. She often records the
@@ -43,12 +45,15 @@ TRANSCRIPT:
 
 
 def load(work: Path):
+    from director_spike_takes import parse_srt
+
     clip_map = json.loads((work / "clip_map.json").read_text())
     lines = parse_srt(work / "all_takes.srt")
     return clip_map, lines
 
 
 def organize(work: Path, effort: str) -> None:
+    from director_spike_takes import DEVELOPER, LINES_SCHEMA
     from guestlist.meta import spark
 
     clip_map, lines = load(work)
@@ -423,10 +428,42 @@ def broll_proxy(work: Path, dirs: list[Path]) -> None:
     print(json.dumps({"shots": len(shots), "seconds": round(t, 1)}))
 
 
+def _overlay_filters(k: int, s: float, e: float, speed: float, last: str) -> tuple[str, str]:
+    """Input k as a muted B-roll overlay on [last] from s to e (seconds of the output): cover-scaled to 1080p, played
+    at `speed` from its first read frame, labeled [v{k}]. Shared by broll() and render_overlays()."""
+    return (f"[{k}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
+            f"setpts=(PTS-STARTPTS)/{speed}+{s:.3f}/TB,fps=60000/1001,format=yuv420p[b{k}]",
+            f"[{last}][b{k}]overlay=enable='between(t,{s:.3f},{e:.3f})':eof_action=pass[v{k}]")
+
+
+def render_overlays(base: Path, overlays: list[dict], out: Path, speed: float = 0.5, probe: float | None = None,
+                    dry_run: bool = False) -> Path | list[str]:
+    """Video-only section picture: B-roll laid over `base` (a talk cut, render/joined.mp4) with broll()'s filters.
+
+    overlays = [{source, in, t, d}] in list order: t and d in section seconds (d on screen), in = file seconds; each
+    reads d * speed seconds of source. An empty list renders the plain talk. probe=s runs the same graph for s seconds
+    into the null muxer (nothing written); dry_run returns the argv instead of running it."""
+    inputs, chain, last = ["-i", str(base)], [], "0:v"
+    for k, o in enumerate(overlays, 1):
+        t = o["t"] if "t" in o else o["r"]  # timeline.json broll entries name it r
+        inputs += ["-ss", f"{o['in']:.3f}", "-t", f"{o['d'] * speed:.3f}", "-i", str(o["source"])]
+        chain += _overlay_filters(k, t, t + o["d"], speed, last)
+        last = f"v{k}"
+    chain.append(f"[{last}]setsar=1[out]")
+    dest = ["-t", f"{probe:.3f}", "-f", "null", "-"] if probe else ["-movflags", "+faststart", str(out)]
+    argv = ["ffmpeg", "-v", "error", "-nostdin", "-y", *inputs, "-filter_complex", ";".join(chain), "-map", "[out]",
+            "-an", "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-r", "60000/1001", "-pix_fmt", "yuv420p", *dest]
+    if dry_run:
+        return argv
+    subprocess.run(argv, check=True)
+    return out
+
+
 def broll(work: Path, effort: str, subject: str = "", exclude: tuple[str, ...] = (),
           cover: tuple[tuple[float, float], ...] = (), insert: tuple[str, ...] = (), drop_at: tuple[float, ...] = (),
           speed: float = 1.0, reuse_plan: bool = False, cues_file: Path | None = None,
           retime: tuple[tuple[float, float], ...] = ()) -> None:
+    from director_spike_takes import parse_srt
     from guestlist.meta import spark
     from ghostcut.export_fcpxml import export_fcpxml
     from ghostcut.models import BrollOverlay, MediaClip, TimelineSegment
@@ -540,9 +577,7 @@ def broll(work: Path, effort: str, subject: str = "", exclude: tuple[str, ...] =
         b = bmap[o["tag"]]
         # Slow motion reads less source: at 0.5 each 59.94 frame is shown twice (30p look, no interpolation smear).
         inputs += ["-ss", f"{o['broll_start']:.3f}", "-t", f"{(e - s) * speed:.3f}", "-i", b["source"]]
-        chain.append(f"[{k}:v]scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080,"
-                     f"setpts=(PTS-STARTPTS)/{speed}+{s:.3f}/TB,fps=60000/1001,format=yuv420p[b{k}]")
-        chain.append(f"[{last}][b{k}]overlay=enable='between(t,{s:.3f},{e:.3f})':eof_action=pass[v{k}]")
+        chain += _overlay_filters(k, s, e, speed, last)
         last = f"v{k}"
     out = work / f"{name}_broll.mp4"
     subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(chain), "-map", f"[{last}]",
@@ -874,11 +909,29 @@ def _whoosh(sr: int = 48000, dur: float = 0.35):
     return out / np.abs(out).max()
 
 
-def facts(work: Path, video: Path, spec_file: Path, out: Path) -> Path:
+CARD_MAX_W = 1784  # px: a card PNG at x=96 must end 40 px inside the 1920 frame
+CARD_PATHLIKE = re.compile(r"(Users|private|Volumes|tmp|var)/|\.(sh|py)\b")  # v16 burned a scratch path into a card
+
+
+def _vdur(path: Path) -> float:
+    """Duration of the first video stream (format duration if the container has none)."""
+    out = subprocess.run(["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=duration",
+                          "-of", "csv=p=0", str(path)], capture_output=True, text=True).stdout.strip()
+    try:
+        return float(out)
+    except ValueError:
+        return float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0",
+                                     str(path)], capture_output=True, text=True).stdout)
+
+
+def facts(work: Path, video: Path | list[Path], spec_file: Path, out: Path, probe: float | None = None) -> Path:
     """On-screen fact cards (only what the agent says on camera): each line slides in on the word that states it, with
     a soft chime; the first line of a card also gets a whoosh. Picture is re-encoded with the cards, audio copied, and
     the effects are written next to `out` as <out>.sfx.wav for the mix step (kept out of the voice so isolation and
     ducking never touch them).
+    video as a list: the section pictures in program order, joined frame-exactly by the concat filter (each normalised
+    to SAR 1), output video only, SFX bed as long as the summed video streams. probe=s: the same graph for s seconds
+    into the null muxer, no SFX. A card line wider than CARD_MAX_W or text that looks like a path raises ValueError.
     spec: {"accent": [r, g, b]?, "cards": [{"until": s, "caption": "SMALL LABEL", "size": 60, "lines": [["TEXT", at_s], ...]}]}"""
     import numpy as np
     from PIL import Image, ImageDraw, ImageFilter, ImageFont
@@ -889,9 +942,13 @@ def facts(work: Path, video: Path, spec_file: Path, out: Path) -> Path:
     accent = tuple(spec.get("accent", [196, 98, 62])) + (255,)  # default: warm terracotta
 
     def png(text: str, size: int, name: str, bar: bool) -> tuple[Path, int, int]:
+        if CARD_PATHLIKE.search(text):
+            raise ValueError(f"card text looks like a file path: {text!r}")
         font = ImageFont.truetype("/System/Library/Fonts/Avenir Next.ttc", size, index=2)
         w, h = (int(v) for v in font.getbbox(text)[2:])
         pad, x0 = 24, (22 if bar else 0)
+        if w + x0 + 2 * pad > CARD_MAX_W:
+            raise ValueError(f"card line is {w + x0 + 2 * pad} px wide (max {CARD_MAX_W}): {text!r}")
         img = Image.new("RGBA", (w + x0 + 2 * pad, h + 2 * pad), (0, 0, 0, 0))
         shadow = Image.new("RGBA", img.size, (0, 0, 0, 0))
         ImageDraw.Draw(shadow).text((pad + x0, pad), text, font=font, fill=(0, 0, 0, 230))
@@ -922,21 +979,32 @@ def facts(work: Path, video: Path, spec_file: Path, out: Path) -> Path:
             y += h - 34
         sfx_at.append((card["lines"][0][1] - 0.2, "whoosh"))
 
-    inputs, chain, last = ["-i", str(video)], [], "0:v"
-    for k, (f, x, y, a, u) in enumerate(items, 1):
+    many = isinstance(video, list)
+    videos = video if many else [video]
+    inputs, chain, last = [x for v in videos for x in ("-i", str(v))], [], "0:v"
+    if many:  # no stream-copy concat: no priming shift, no held frames at the joins, each member decoded on its own
+        chain = [f"[{i}:v]setsar=1[s{i}]" for i in range(len(videos))]
+        chain.append("".join(f"[s{i}]" for i in range(len(videos))) + f"concat=n={len(videos)}:v=1:a=0[base]")
+        last = "base"
+    for k, (f, x, y, a, u) in enumerate(items, len(videos)):
         inputs += ["-loop", "1", "-framerate", "60000/1001", "-t", f"{u - a:.3f}", "-i", str(f)]
         chain.append(f"[{k}:v]format=rgba,fade=t=in:d=0.25:alpha=1,fade=t=out:st={u - a - 0.35:.3f}:d=0.35:alpha=1,"
                      f"setpts=PTS+{a:.3f}/TB[f{k}]")
         chain.append(f"[{last}][f{k}]overlay=x='{x}-36*pow(max(0\\,1-(t-{a:.3f})/0.3)\\,2)':y={y}:"
                      f"enable='between(t,{a:.3f},{u:.3f})':eof_action=pass[v{k}]")
         last = f"v{k}"
+    amap, acodec = (["-an"], []) if many else (["-map", "0:a"], ["-c:a", "copy"])
+    dest = ["-t", f"{probe:.3f}", "-f", "null", "-"] if probe else ["-movflags", "+faststart", str(out)]
     subprocess.run(["ffmpeg", "-v", "error", "-y", *inputs, "-filter_complex", ";".join(chain), "-map", f"[{last}]",
-                    "-map", "0:a", "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-r", "60000/1001", "-pix_fmt",
-                    "yuv420p", "-c:a", "copy", "-movflags", "+faststart", str(out)], check=True)
+                    *amap, "-c:v", "libx264", "-preset", "fast", "-crf", "19", "-r", "60000/1001", "-pix_fmt",
+                    "yuv420p", *acodec, *dest], check=True)
+    if probe:
+        return out
 
     sr = 48000
-    dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
-                               capture_output=True, text=True).stdout)
+    dur = sum(_vdur(v) for v in videos) if many else \
+        float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
+                             capture_output=True, text=True).stdout)
     bed = np.zeros(int(dur * sr) + sr)
     sounds = {"ping": _ping(sr) * 10 ** (-17 / 20), "whoosh": _whoosh(sr) * 10 ** (-26 / 20)}
     for at, kind in sfx_at:
@@ -1000,33 +1068,66 @@ def _isolate_voice(video: Path, a: float, b: float, out: Path) -> Path:
     return out
 
 
+def _loudness(path: Path) -> tuple[float, float]:
+    """Integrated loudness (LUFS) and true peak (dBTP) in one ebur128 pass."""
+    err = subprocess.run(["ffmpeg", "-nostats", "-i", str(path), "-vn", "-af", "ebur128=peak=true", "-f", "null", "-"],
+                         capture_output=True, text=True).stderr
+    last = lambda key: float([ln for ln in err.splitlines() if ln.strip().startswith(key)][-1].split()[1])  # noqa: E731
+    return last("I:"), last("Peak:")
+
+
 def mix(work: Path, video: Path, music: Path, out: Path, under: float = 20.0, intro: float = 0.0,
-        isolate: tuple[float, float] | None = None, sfx: Path | None = None) -> None:
-    """Music bed under the voice: looped with 2 s crossfades, set `under` LU below the voice, ducked further while
-    she talks (sidechain), faded in/out; voice gets an 80 Hz high-pass (wind/handling rumble). Picture is copied."""
+        isolate: tuple[float, float] | None = None, sfx: Path | None = None, voice: Path | None = None) -> dict:
+    """Music bed under the voice: looped with 2 s crossfades (only when shorter than the video), set `under` LU below
+    the voice, ducked further while she talks (sidechain), faded in/out; voice gets an 80 Hz high-pass (wind/handling
+    rumble). Picture is copied. voice: a program voice WAV (Render's) used instead of the video's own audio."""
+    if voice and isolate:
+        raise ValueError("mix: pass voice or isolate, not both")
     dur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(video)],
                                capture_output=True, text=True).stdout)
     mdur = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", str(music)],
                                 capture_output=True, text=True).stdout)
-    copies = int(dur // (mdur - 2.0)) + 2
+    copies = 1 if mdur >= dur else int(dur // (mdur - 2.0)) + 2  # a long enough bed never loops into its own start
     bed = work / "music_bed.wav"
-    graph = "[0:a]anull[x0];" + ";".join(f"[x{i - 1}][{i}:a]acrossfade=d=2[x{i}]" for i in range(1, copies)) + \
+    graph = "[0:a]anull[x0]" + "".join(f";[x{i - 1}][{i}:a]acrossfade=d=2[x{i}]" for i in range(1, copies)) + \
             f";[x{copies - 1}]atrim=0:{dur:.3f},afade=t=in:d=1.5,afade=t=out:st={dur - 4:.3f}:d=4[out]"
     subprocess.run(["ffmpeg", "-v", "error", "-y", *sum((["-i", str(music)] for _ in range(copies)), []),
                     "-filter_complex", graph, "-map", "[out]", "-ar", "48000", "-ac", "2", str(bed)], check=True)
-    voice = _isolate_voice(video, *isolate, work / "voice_isolated.wav") if isolate else video
-    gain = (_lufs(video) - under) - _lufs(bed)
+    level = voice or video
+    voice = voice or (_isolate_voice(video, *isolate, work / "voice_isolated.wav") if isolate else video)
+    gain = (_lufs(level) - under) - _lufs(bed)
     lift = 10 ** (12 / 20)  # the music carries the cold open: +12 dB until the tour starts
     graph = (f"[0:a]highpass=f=80,asplit=2[v][key];[1:a]volume={gain:.2f}dB,"
              f"volume='if(lt(t,{intro:.3f}),{lift:.4f},1)':eval=frame[m];"
              "[m][key]sidechaincompress=threshold=0.05:ratio=4:attack=30:release=500[md];"
+             # fact-card chimes (sfx) sit beside the voice, never key the duck
              f"[v][md]{'[3:a]' if sfx else ''}amix=inputs={3 if sfx else 2}:duration=first:normalize=0,"
-             "loudnorm=I=-14:TP=-1.5:LRA=11[a]")  # fact-card chimes (sfx) sit beside the voice, never key the duck
+             # loudnorm's flush stamps its last 3 s as if the input ended on a 100 ms boundary (a gap of up to 100 ms
+             # late, audio longer than the picture): re-stamp by sample count.
+             "loudnorm=I=-14:TP=-1.5:LRA=11,asetpts=N/SR/TB[a]")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-i", str(voice), "-i", str(bed), "-i", str(video),
                     *(["-i", str(sfx)] if sfx else []), "-filter_complex", graph,
                     "-map", "2:v", "-map", "[a]", "-c:v", "copy", "-ar", "48000", "-c:a", "aac", "-b:a", "192k",
                     "-movflags", "+faststart", str(out)], check=True)
-    print(json.dumps({"music_gain_db": round(gain, 1), "copies": copies, "out": str(out), "lufs": _lufs(out)}))
+    lufs, tp = _loudness(out)
+    res = {"music_gain_db": round(gain, 2), "copies": copies, "out": str(out), "lufs": lufs, "tp": tp}
+    print(json.dumps(res))
+    return res
+
+
+PHONE_LIMIT = "alimiter=limit=0.631:level=0:latency=1"  # -4 dBFS: r002 measured +1.1 dBTP without it, -0.7 with it
+
+
+def phone_copy(master: Path, out: Path, passlog: Path) -> Path:
+    """960x540 29.97 fps phone copy, 2-pass x264 at 200k + AAC 72k. The fps filter keeps every other master frame on
+    its own timestamp (cuts within one source frame); -r 30000/1001 put them 50 ms late. AAC at 72k overshoots the
+    master's peaks by up to 3 dB, so a -4 dBFS limiter (latency-compensated, no make-up gain) keeps it under 0 dBTP."""
+    enc = ["ffmpeg", "-v", "error", "-nostdin", "-y", "-i", str(master), "-vf", "fps=30000/1001,scale=960:540",
+           "-c:v", "libx264", "-b:v", "200k", "-passlogfile", str(passlog)]
+    subprocess.run([*enc, "-pass", "1", "-an", "-f", "null", "-"], check=True)
+    subprocess.run([*enc, "-pass", "2", "-af", PHONE_LIMIT, "-c:a", "aac", "-b:a", "72k", "-movflags", "+faststart",
+                    str(out)], check=True)
+    return out
 
 
 def main() -> None:
@@ -1054,6 +1155,7 @@ def main() -> None:
     ap.add_argument("--retime", default="", help="broll: at=dt pairs, timeline seconds cut (dt<0) since the reused plan")
     ap.add_argument("--sfx", type=Path, help="mix: effects track (from the facts step) laid beside the voice")
     ap.add_argument("--intro-len", type=float, default=0.0, help="mix: seconds of cold open at the start (music lifted)")
+    ap.add_argument("--voice", type=Path, help="mix: program voice WAV used instead of the video's audio")
     args = ap.parse_args()
     {"organize": lambda: organize(args.work, args.effort), "cut": lambda: cut(args.work, args.pieces), "refine": lambda: refine(args.work, args.words),
      "broll-proxy": lambda: broll_proxy(args.work, args.broll_dir),
@@ -1066,7 +1168,8 @@ def main() -> None:
      "intro": lambda: intro(args.work, args.spec),
      "facts": lambda: facts(args.work, args.video, args.spec, args.out),
      "mix": lambda: mix(args.work, args.video, args.music, args.out, intro=args.intro_len,
-                        isolate=tuple(float(x) for x in args.isolate.split("-")) if args.isolate else None, sfx=args.sfx),
+                        isolate=tuple(float(x) for x in args.isolate.split("-")) if args.isolate else None, sfx=args.sfx,
+                        voice=args.voice),
      "qa": lambda: qa(args.work, args.video, args.model, args.effort)}[args.step]()
 
 

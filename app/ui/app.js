@@ -36,13 +36,26 @@
     $("#projTitle").textContent = "No demo project";
     return;
   }
+  // Render state from the engine: {state: idle|running|refused|failed|failed_verification|cancelled|promoted|interrupted, version}.
+  let RS = ENGINE?.render || { state: "idle", version: null };
+  const BUSY = { accept: "Rendering — accept after it finishes", undo: "Rendering — undo after it finishes", revert: "Rendering — revert after it finishes" };
+  const busy = (btn, kind) => {
+    btn.dataset.busy = kind;
+    if (RS.state === "running") { btn.disabled = true; btn.title = BUSY[kind]; }
+    return btn;
+  };
   const SEC = ["var(--sec0)", "var(--sec1)", "var(--sec2)", "var(--sec3)"];
-  const thumb = (t) => `demo/thumbs/${String(Math.min(Math.floor(t / 2) + 1, Math.floor(P.duration / 2))).padStart(4, "0")}.jpg`;
+  const VQ = P.version ? `?v=${encodeURIComponent(P.version)}` : ""; // each render swaps the media under the same names
+  const thumb = (t) => `demo/thumbs/${String(Math.min(Math.floor(t / 2) + 1, Math.floor(P.duration / 2))).padStart(4, "0")}.jpg${VQ}`;
   const pct = (t) => `${(t / P.duration) * 100}%`;
   const LIB = () => Object.fromEntries((P.library || []).map((e) => [e.tag, e]));
+  // The preview is the middle frame of the insert Render places (render_plan.in_point): mid of the shot's clean range in
+  // file seconds. V, W and P shots are 2× prerenders whose library range is in on-screen seconds, hence ÷2. No range (or
+  // an empty one): the middle of the file. Sent to the ms, so 8.75 doesn't round to a frame 50 ms away.
   const frameUrl = (tag) => {
-    const e = LIB()[tag], b = e?.best || [0, 1];
-    return `/api/frame?tag=${encodeURIComponent(tag)}&t=${((b[0] + b[1]) / 2 || 1).toFixed(1)}`;
+    const e = LIB()[tag] || {}, k = /^[VWP]/.test(tag) ? 2 : 1, b = e.best;
+    const t = b && b[1] > b[0] ? (b[0] + b[1]) / 2 / k : (e.dur || 0) / 2;
+    return `/api/frame?tag=${encodeURIComponent(tag)}&t=${t.toFixed(3)}`;
   };
   const MANUAL = "inserted to cover the background";
 
@@ -81,8 +94,8 @@
 
   // ---------- player ----------
   const video = $("#video");
-  video.poster = "demo/poster.jpg";
-  video.src = "demo/video.mp4";
+  video.poster = `demo/poster.jpg${VQ}`;
+  video.src = `demo/video.mp4${VQ}`;
   video.onerror = () => ($("#noVideo").hidden = false);
   $("#tcDur").textContent = fmt(P.duration);
   const playBtn = $("#playBtn");
@@ -91,6 +104,7 @@
   video.onplay = () => { playBtn.textContent = "❚❚"; tick(); };
   video.onpause = () => (playBtn.textContent = "▶");
   document.addEventListener("keydown", (e) => {
+    if (!$("#renderDlg").hidden) { if (e.key === "Escape") $("#renderDlg").hidden = true; return; }
     if (/TEXTAREA|INPUT|SELECT/.test(document.activeElement.tagName)) return;
     if (e.code === "Space") { e.preventDefault(); toggle(); }
     if (e.code === "ArrowLeft") seek(video.currentTime - (e.shiftKey ? 5 : 1));
@@ -250,7 +264,7 @@
 
   function applyResult(j) {
     ({ project: P, edits: EDITS, engine: ENGINE } = j);
-    renderTimeline(); renderFindings(); renderSpend();
+    renderTimeline(); renderFindings(); renderSpend(); renderButton();
   }
 
   function proposalMsg(r) {
@@ -273,7 +287,7 @@
     el.append(h("div", { class: "meta" }, `◆ ${r.model} · ${r.cached ? "cached · $0.00" : `$${r.usd.toFixed(3)} · ${Math.round(r.seconds)} s`} · checks are measured`));
     const acts = h("div", { class: "acts" });
     if (r.ops?.some((o) => !o.blocked)) {
-      const ok = h("button", { class: "ok" }, "Accept");
+      const ok = busy(h("button", { class: "ok" }, "Accept"), "accept");
       const no = h("button", {}, "Reject");
       ok.onclick = async () => {
         const pick = picks.map((c, i) => (c.checked ? i : -1)).filter((i) => i >= 0);
@@ -283,13 +297,15 @@
           applyResult(j);
           const edit = j.edits[j.edits.length - 1];
           picks.forEach((c) => (c.disabled = true));
-          const undo = h("button", {}, "Undo");
+          const undo = busy(h("button", {}, "Undo"), "undo");
           undo.onclick = async () => {
-            applyResult(await api("/api/undo", { edit: edit.id }));
-            acts.replaceChildren(h("span", { class: "applied", style: "color:var(--dim)" }, "Undone"));
+            try {
+              applyResult(await api("/api/undo", { edit: edit.id }));
+              acts.replaceChildren(h("span", { class: "applied", style: "color:var(--dim)" }, "Undone"));
+            } catch (e) { acts.append(h("span", { class: "err" }, e.message)); }
           };
           acts.replaceChildren(h("span", { class: "applied" }, `✓ Applied ${pick.length} · waiting to render`), undo);
-        } catch (e) { ok.disabled = false; acts.append(h("span", { class: "err" }, e.message)); }
+        } catch (e) { ok.disabled = RS.state === "running"; acts.append(h("span", { class: "err" }, e.message)); }
       };
       no.onclick = () => { picks.forEach((c) => (c.disabled = true)); acts.replaceChildren(h("span", { class: "applied", style: "color:var(--dim)" }, "Rejected · kept as is")); };
       acts.append(ok, no);
@@ -333,14 +349,17 @@
     if (v) { $("#askInput").value = ""; reply(v); }
   };
   $("#askInput").addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("#askForm").requestSubmit(); } });
-  $("#undoLast").onclick = async () => { if (LIVE && EDITS.length) applyResult(await api("/api/undo", {})); };
+  $("#undoLast").onclick = async () => {
+    if (!LIVE || !EDITS.length) return;
+    try { applyResult(await api("/api/undo", {})); } catch (e) { $("#pendingN").textContent = e.message; }
+  };
 
   // Review
   let filter = "all";
-  const SRC = { measured: "Measured", spark: "Spark", you: "You", reshoot: "Reshoot" };
+  const SRC = { measured: "Measured", spark: "Spark", you: "You", reshoot: "Reshoot", render: "Render" };
   function renderFindings() {
     const list = $("#findings"); list.replaceChildren();
-    if ((P.findings || []).some((f) => !f.edit))
+    if ((P.findings || []).some((f) => !f.edit && !f.render)) // Render's own notes carry render: rNNN
       list.append(h("li", { class: "banner" }, "Findings without a Muse note were written by hand during development (scripted demo content), not generated by the app."));
     (P.findings || []).forEach((f, i) => {
       if (filter !== "all" && f.state !== filter && !(filter === "fixed" && f.state === "ok")) return;
@@ -432,6 +451,206 @@
     }
   }
 
+  // ---------- render: plan → start → progress → promote (app/render.py does the work; the engine follows it) ----------
+  const bar = $("#renderBar"), dlg = $("#renderDlg");
+  const FIX = {
+    card16_text: "Card text repaired", voice_sync: "Voice re-synced to the picture", frame_exact_joins: "Frame-exact section joins",
+    phone_fps: "Phone copy timing (no extra picture delay)", music_loop: "Music bed no longer loops into its own start",
+  };
+  const ENDED = {
+    refused: "Render refused", failed: "Render failed", failed_verification: "Checks failed · nothing was promoted",
+    interrupted: "Render interrupted", cancelled: "Render cancelled", idle: "Render stopped",
+  };
+  const about = (s) => (s >= 90 ? `About ${Math.round(s / 60)} min` : `About ${Math.max(1, Math.round(s))} s`);
+  const say = (x) => (typeof x === "string" ? x : x?.label || x?.title || x?.text || x?.message || x?.reason || JSON.stringify(x));
+  let mode = "", pollTimer = 0, polling = false, watchV = null, since = 0;
+
+  function renderButton() {
+    const btn = $("#renderBtn"), n = P.pending || 0;
+    const what = [n && `${n} change${n === 1 ? "" : "s"}`, !P.version && "fixes"].filter(Boolean);
+    btn.textContent = what.length ? `Render · ${what.join(" + ")}` : "Render";
+    const why = !LIVE ? "Render needs the engine: run app/main.py or app/engine.py"
+      : RS.state === "running" ? `Rendering ${RS.version || ""}…`
+      : RS.state === "unavailable" ? RS.message || "Render isn't available"
+      : !what.length ? "Nothing waiting to render" : "";
+    btn.disabled = !!why;
+    btn.title = why || "See what the next version changes, then start it";
+    renderVersion();
+  }
+  function renderVersion() {
+    const chip = $("#verChip");
+    chip.hidden = !P.version;
+    if (!P.version) return;
+    const rv = LIVE ? busy(h("button", { class: "link", title: "Go back to the previous version" }, "Revert"), "revert") : null;
+    if (rv) rv.onclick = askRevert;
+    chip.replaceChildren(...[h("b", {}, P.version), rv].filter(Boolean));
+  }
+  // While a render runs, Accept / Undo / Revert wait: the render took a snapshot of the edit list.
+  function lockEdits() {
+    const on = RS.state === "running";
+    $$("[data-busy]").forEach((b) => { b.disabled = on; b.title = on ? BUSY[b.dataset.busy] : ""; });
+    renderButton();
+  }
+  const setRS = (st) => { RS = { state: st.state, version: st.version, message: st.message }; lockEdits(); };
+  const barActs = (...kids) => $("#renderActs").replaceChildren(...kids.filter(Boolean));
+  const barText = (s) => { $("#renderText").textContent = s; $("#renderText").title = s; };
+  const closeBar = () => { bar.hidden = true; mode = ""; };
+
+  function openDlg(title, start = false) {
+    $("#renderDlgTitle").textContent = title;
+    $("#renderDlgBody").replaceChildren(h("p", { class: "muted" }, start ? "Planning the next version…" : "Loading…"));
+    $("#renderStart").hidden = !start;
+    $("#renderStart").disabled = true;
+    dlg.hidden = false;
+  }
+  $("#renderDlgClose").onclick = () => (dlg.hidden = true);
+  dlg.addEventListener("click", (e) => { if (e.target === dlg) dlg.hidden = true; });
+
+  async function openPlan() {
+    openDlg("Render", true);
+    const body = $("#renderDlgBody"), startBtn = $("#renderStart");
+    let plan;
+    try { plan = await api("/api/render/plan"); } catch (e) { body.replaceChildren(h("p", { class: "err" }, e.message)); return; }
+    const changes = plan.changes || [], fixes = plan.fixes || [], refusals = plan.refusals || [], notes = plan.notes || [];
+    $("#renderDlgTitle").textContent = `Render ${plan.next_version || ""}`.trim();
+    const groups = {};
+    changes.forEach((c) => {
+      const g = /_card$/.test(c.op) ? "Cards" : c.op === "add_note" ? "Review notes"
+        : P.sections[c.section]?.name || (typeof c.section === "string" && c.section) || "Program";
+      (groups[g] ||= []).push(c);
+    });
+    const kids = [h("h4", {}, "Will render"), changes.length
+      ? Object.entries(groups).map(([g, cs]) => h("div", { class: "grp" }, h("b", {}, g), h("ul", {}, cs.map((c) => h("li", {}, say(c.label || c.op))))))
+      : h("p", { class: "muted" }, "No accepted changes.")];
+    if (fixes.length) kids.push(h("h4", {}, "Fixes"), h("ul", {}, fixes.map((f) => h("li", { class: "fix" }, typeof f === "string" ? FIX[f] || f.replace(/_/g, " ") : say(f)))));
+    if (refusals.length) kids.push(h("h4", { class: "bad" }, "Can't render"), h("ul", {}, refusals.map((r) => {
+      if (!r.edit) return h("li", { class: "refused" }, h("div", {}, h("b", {}, say(r.label || r.op || "plan")), h("small", {}, say(r.reason || "")))); // not from an edit: nothing to undo
+      const undo = busy(h("button", {}, "Undo"), "undo");
+      undo.onclick = async () => {
+        undo.disabled = true;
+        try { applyResult(await api("/api/undo", { edit: r.edit })); openPlan(); } catch (e) { undo.disabled = false; undo.after(h("span", { class: "err" }, e.message)); }
+      };
+      return h("li", { class: "refused" }, h("div", {}, h("b", {}, say(r.label || r.op)), h("small", {}, say(r.reason || ""))), undo);
+    })));
+    if (notes.length) kids.push(h("h4", {}, "Heads-up"), h("ul", {}, notes.map((n) => h("li", { class: "note" }, say(n)))));
+    const dirty = plan.dirty_names || (plan.dirty || []).map((i) => P.sections[i]?.name || i);
+    kids.push(h("p", { class: "est" }, [plan.estimate_s > 0 ? about(plan.estimate_s) : "",
+      dirty.length ? `re-renders the ${dirty.join(", ")} picture${dirty.length > 1 ? "s" : ""}, then cards, mix and the phone copy` : "cards, mix and the phone copy"].filter(Boolean).join(" · ")),
+    h("p", { class: "keep" }, "The current cut stays until the new one passes its checks."));
+    if (refusals.length) kids.push(h("p", { class: "err" }, "Start stays off until every change can render: undo the ones above, or ask Muse for a note instead."));
+    body.replaceChildren(...kids.flat());
+    startBtn.disabled = !!refusals.length || (!changes.length && !fixes.length) || RS.state === "running";
+    startBtn.onclick = async () => {
+      startBtn.disabled = true;
+      try {
+        const r = await api("/api/render", {});
+        dlg.hidden = true;
+        follow(r.version);
+      } catch (e) { startBtn.disabled = false; body.append(h("p", { class: "err" }, e.message)); }
+    };
+  }
+
+  function follow(version) {
+    watchV = version; since = Date.now(); mode = "";
+    setRS({ state: "running", version });
+    showProgress({ version, step: "Starting", pct: 0 });
+    clearInterval(pollTimer);
+    pollTimer = setInterval(poll, 1000);
+    poll();
+  }
+  async function poll() {
+    if (polling) return;
+    polling = true;
+    try {
+      const st = await api("/api/render");
+      if (st.state === "running") {
+        watchV = st.version;
+        if (RS.state !== "running" || RS.version !== st.version) setRS(st);
+        showProgress(st);
+        return;
+      }
+      if (st.version !== watchV && Date.now() - since < 30000) return; // the child hasn't reported yet
+      clearInterval(pollTimer); pollTimer = 0;
+      const mine = st.version === watchV ? st : { state: "failed", version: watchV, message: "the render process never reported back", log: st.log };
+      if (mine.state !== "promoted") setRS(mine); // promoted: edits stay locked until the page reloads on the new cut
+      ended(mine);
+    } catch (e) {
+      barText(`Can't read the render's progress · ${e.message}`);
+    } finally { polling = false; }
+  }
+  function showProgress(st) {
+    bar.hidden = false;
+    bar.className = "renderbar";
+    if (mode !== "running") {
+      mode = "running";
+      const c = h("button", {}, "Cancel");
+      c.onclick = async () => {
+        c.disabled = true; c.textContent = "Cancelling…";
+        try { await api("/api/render/cancel", {}); } catch (e) { c.disabled = false; c.textContent = "Cancel"; barText(e.message); }
+      };
+      barActs(c);
+    }
+    const p = Math.max(0, Math.min(100, +st.pct || 0));
+    $("#renderFill").style.width = `${p}%`;
+    barText([st.version, st.step || "Starting", st.n ? `step ${st.i || 0} of ${st.n}` : "", `${Math.round(p)}%`].filter(Boolean).join(" · "));
+    $("#renderEta").textContent = st.eta_s > 0 ? `${fmt(st.eta_s)} left` : "";
+  }
+  function ended(st) {
+    mode = st.state;
+    bar.hidden = false;
+    $("#renderEta").textContent = "";
+    const checks = Array.isArray(st.checks) ? st.checks : [];
+    if (st.state === "promoted") {
+      const n = checks.length ? checks.filter((c) => c.status !== "fail").length : +st.checks || 0;
+      const head = /ready/.test(st.message || "") ? st.message : `${st.version} ready`; // render says "rNNN ready · N checks passed"
+      bar.className = "renderbar ok";
+      $("#renderFill").style.width = "100%";
+      barText([head, n && !/checks passed/.test(head) ? `${n} checks passed` : "", "loading the new cut…"].filter(Boolean).join(" · "));
+      barActs();
+      setTimeout(() => location.reload(), 1500);
+      return;
+    }
+    const failing = checks.filter((c) => c.status === "fail").map((c) => (c.value != null ? `${c.name} (${c.value})` : c.name));
+    bar.className = `renderbar ${st.state === "cancelled" ? "off" : "bad"}`;
+    $("#renderFill").style.width = "0";
+    barText([ENDED[st.state] || st.state, st.message, failing.length ? `failing: ${failing.join(", ")}` : "",
+      /current cut/.test(st.message || "") ? "" : "the current cut is unchanged"].filter(Boolean).join(" · "));
+    barActs(st.log ? h("button", { class: "link", onclick: showLog }, "render.log") : null, h("button", { title: "Dismiss", onclick: closeBar }, "×"));
+  }
+  async function showLog() {
+    openDlg("render.log");
+    const body = $("#renderDlgBody");
+    try {
+      const r = await fetch("/api/render/log");
+      const t = await r.text();
+      if (!r.ok) throw new Error((() => { try { return JSON.parse(t).error; } catch { return `HTTP ${r.status}`; } })());
+      const pre = h("pre", { class: "log" }, t || "(empty)");
+      body.replaceChildren(pre);
+      pre.scrollTop = pre.scrollHeight;
+    } catch (e) { body.replaceChildren(h("p", { class: "err" }, e.message)); }
+  }
+  function askRevert() {
+    if (RS.state === "running") return;
+    mode = "ask";
+    bar.hidden = false;
+    bar.className = "renderbar ask";
+    $("#renderFill").style.width = "0";
+    $("#renderEta").textContent = "";
+    barText(`Go back to the version before ${P.version}? ${P.version} stays on the drive.`);
+    const yes = h("button", { class: "danger" }, "Revert");
+    yes.onclick = async () => {
+      yes.disabled = true;
+      try {
+        await api("/api/render/revert", {});
+        barText("Reverted · loading the previous cut…");
+        barActs();
+        setTimeout(() => location.reload(), 300);
+      } catch (e) { yes.disabled = false; barText(`Can't revert · ${e.message}`); }
+    };
+    barActs(yes, h("button", { onclick: closeBar }, "Keep"));
+  }
+  $("#renderBtn").onclick = () => { if (!$("#renderBtn").disabled) openPlan(); };
+
   // ---------- pages ----------
   const stat = (n, label) => h("div", { class: "stat" }, h("b", {}, n), h("span", {}, label));
   const PAGES = {
@@ -475,18 +694,24 @@
             h("ol", { class: "thinking", style: "padding-left:18px" }, ["360p proxies for every clip (originals stay here)", "Whisper words for every talking take", "Spark inventory: what each clip shows and where it belongs", "Sections proposed from the day's order"].map((s) => h("li", {}, s))))));
     },
     deliver(el) {
-      const { lufs, tp } = P.loudness || { lufs: NaN, tp: NaN };
-      const pos = (v) => `${((v + 24) / 24) * 100}%`;
+      const L = { ...P.mix, ...P.loudness }, f = (v) => (v == null || v === "" ? NaN : +v);
+      const lufs = f(L.lufs), tp = f(L.tp), gain = f(L.music_gain_db);
+      const num = (v) => (Number.isFinite(v) ? v.toFixed(1).replace("-", "−") : "–");
+      const pos = (v) => `${((Math.max(-24, Math.min(0, Number.isFinite(v) ? v : -24)) + 24) / 24) * 100}%`;
       el.append(h("h2", {}, "Deliver"),
-        h("p", { class: "lede" }, "Finish here, or hand the cut to your editor with every decision editable. PROTOTYPE: the export buttons are not wired yet; the loudness figures were measured on the current master."),
+        h("p", { class: "lede" }, `Finish here, or hand the cut to your editor with every decision editable. PROTOTYPE: the export buttons are not wired yet. ${P.version
+          ? `The loudness figures were measured on the ${P.version} master.` : "This cut was built before Render: its loudness figures were entered by hand, and the first render re-measures them."}`),
+        h("div", { class: "stats" }, stat(P.version || "legacy", P.version ? "version · rendered by GhostCut" : "version · built before Render"),
+          stat(num(lufs), "LUFS integrated"), stat(num(tp), "dBTP true peak"),
+          Number.isFinite(gain) ? stat(`${num(gain)} dB`, "music bed gain") : null),
         h("div", { class: "cols" },
           h("div", { class: "box" }, h("h3", {}, "Outputs"),
             [["Master · 1080p59.94 MP4", "−14 LUFS web master"], ["Phone preview · 540p", "under 30 MB, for the client's phone"], ["Final Cut Pro · FCPXML", "cuts, B-roll lane, cards as titles"], ["Premiere Pro · XML", "FCP7 XML"], ["DaVinci Resolve", "imports the FCPXML"], ["Captions · SRT", "from Whisper words on the render"], ["Reshoot list", "missing shots, never generated"]]
               .map(([a, b], i) => h("label", { class: "out" }, h("input", { type: "checkbox", checked: i < 3 || null }), h("div", {}, h("b", {}, a), h("span", {}, b))))),
-          h("div", { class: "box" }, h("h3", {}, "Loudness"),
-            h("div", { class: "big" }, `${lufs} LUFS`), h("p", {}, `True peak ${tp.toFixed(1)} dBTP · target −14 LUFS ±1, ≤ −1 dBTP`),
+          h("div", { class: "box" }, h("h3", {}, `Loudness · ${P.version || "legacy build"}`),
+            h("div", { class: "big" }, `${num(lufs)} LUFS`), h("p", {}, `True peak ${num(tp)} dBTP · target −14 LUFS ±1, ≤ −1 dBTP`),
             h("div", { class: "meter" }, h("div", { class: "tgt", style: `left:${pos(-15)};right:${`${100 - parseFloat(pos(-13))}%`}` }), h("i", { style: `left:${pos(lufs)}` })),
-            h("p", { class: "muted", style: "font-size:11px" }, "−24 … 0 LUFS · measured with ffmpeg ebur128")),
+            h("p", { class: "muted", style: "font-size:11px" }, P.version ? `−24 … 0 LUFS · measured with ffmpeg ebur128 on the ${P.version} master` : "−24 … 0 LUFS · entered by hand, not re-measured")),
           h("div", { class: "box" }, h("h3", {}, "Open before you send"),
             (P.findings || []).filter((f) => f.state === "open").map((f) => h("div", { class: "vol" }, f.title, h("span", {}, fmt(f.t)))),
             P.pending ? h("div", { class: "vol" }, `${P.pending} accepted change${P.pending === 1 ? "" : "s"} waiting to render`, h("span", {}, "Edit")) : null),
@@ -498,6 +723,8 @@
   renderTimeline();
   renderFindings();
   renderWords();
+  lockEdits();
+  if (LIVE && RS.state === "running") follow(RS.version); // reattach: the render outlives the window
   const start = location.hash.slice(1).split("/");
   show(PAGES[start[0]] ? start[0] : "edit");
   tab(["review", "words", "why"].includes(start[1]) ? start[1] : "muse");

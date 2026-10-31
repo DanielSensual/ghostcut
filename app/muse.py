@@ -11,7 +11,18 @@ import re
 
 OPS = ["drop_broll", "move_broll", "swap_broll", "add_broll", "drop_card", "move_card", "edit_card", "add_card",
        "cut_span", "add_note"]
-MIN_GAP = 0.05  # an insert that touches its neighbour drops it at render time
+MIN_GAP = 0.05  # an insert that touches its neighbour drops it at render time (render_plan.validate uses this one)
+SPEED = 0.5  # B-roll plays at half speed
+EDGE = 0.3  # an insert keeps this far from its section's edges
+CARD_EDGE = 0.2  # a card starts at least this long after the cold open
+# Render v1's own numbers (render_plan imports MIN_GAP from here, so these can't come from render_plan)
+MIN_INSERT = 1.0  # Render refuses an added insert shorter than this
+CARD_TAIL = 0.5  # a card ends at least this long before the end of the video
+CARD_MIN = 2.0  # Render keeps an added card up at least this long
+CUT_REFUSED = "Render v1 can't cut talk yet — ask for a note instead"
+CROSSES = "B-roll stays inside one section"
+COLD_OPEN = "The cold open is a finished piece"
+PATHLIKE = re.compile(r"(Users|private|Volumes|tmp|var)/|\.(sh|py)\b")
 
 OP_SCHEMA = {
     "type": "object",
@@ -158,6 +169,44 @@ def _inside_word(p: dict, t: float) -> list | None:
     return next((w for w in _words_between(p, t, t) if w[1] + 0.02 < t < w[2] - 0.02), None)
 
 
+def tag_k(tag: str) -> int:
+    """2 for the 2× prerenders (V, W and P tags), whose library 'best' is in on-screen seconds; 1 otherwise."""
+    return 2 if tag[:1] in ("V", "W", "P") else 1
+
+
+def preview_t(entry: dict) -> float:
+    """File seconds of a library shot's preview frame: the middle of its clean range, or of the file when it has none.
+    Render's in-point rule centres an inserted shot on this same frame."""
+    b0, b1 = [x or 0 for x in (entry.get("best") or [0, 0])][:2]
+    if b1 > b0:
+        return (b0 + b1) / 2 / tag_k(entry.get("tag", ""))
+    return (entry.get("dur") or entry.get("file_dur") or 0) / 2
+
+
+def intro_end(p: dict) -> float:
+    """End of the cold open, a finished piece Render never re-cuts (0 when the project has none)."""
+    for s in p["sections"]:
+        if s.get("kind") == "intro" or any(c.get("src") == "cold open" and s["t"] <= c["t"] < s["t"] + s["d"]
+                                           for c in p["talk"]):
+            return s["t"] + s["d"]
+    return 0.0
+
+
+def _section(p: dict, t: float, name: str = "") -> dict | None:
+    return next((s for s in p["sections"] if s["name"] == name), None) or \
+        next((s for s in p["sections"] if s["t"] <= t < s["t"] + s["d"]), None)
+
+
+def _long_enough(e: dict, tag: str, length: float) -> tuple[bool, str] | None:
+    """A shot plays at 0.5×, so it needs half the on-screen length in file seconds."""
+    dur = e.get("dur") or e.get("file_dur")
+    if not dur:
+        return None
+    ok = SPEED * length <= dur - 0.02
+    return ok, (f"{tag} is long enough for {length:.1f} s at {SPEED:g}×" if ok else
+                f"{tag} is too short for {length:.1f} s at {SPEED:g}× ({dur:.1f} s shot)")
+
+
 def _gap_problems(p: dict, item_id: str, t: float, d: float) -> list[str]:
     out = []
     for b in p["broll"]:
@@ -178,6 +227,8 @@ def check(p: dict, op: dict) -> list[dict]:
 
     items = {it["id"]: it for it in p["broll"] + p["cards"] + p["talk"]}
     lib = {e["tag"]: e for e in p.get("library", [])}
+    if o == "cut_span":
+        add(False, CUT_REFUSED)
     needs_target = o in ("drop_broll", "move_broll", "swap_broll", "drop_card", "move_card", "edit_card")
     if needs_target:
         it = items.get(op["target"])
@@ -191,9 +242,29 @@ def check(p: dict, op: dict) -> list[dict]:
         add(ok, f"{t:.2f}–{t + d:.2f} s is inside the video" if ok else f"Range {t:.2f} +{d:.2f} s is not usable")
         if not ok:
             return out
+    end = intro_end(p)
+    if end and o not in ("cut_span", "add_note"):
+        moves_to = o in ("move_broll", "add_broll", "move_card", "add_card")
+        if (needs_target and items[op["target"]]["t"] < end) or \
+                (moves_to and t < end + (CARD_EDGE if o.endswith("card") else 0)):
+            add(False, COLD_OPEN)
+            return out
     if o in ("move_broll", "add_broll"):
         clash = _gap_problems(p, op["target"], t, d)
         add(not clash, f"Keeps ≥ {MIN_GAP} s from other inserts" if not clash else f"Touches {', '.join(clash)}")
+        it = items.get(op["target"], {})
+        home = _section(p, it["t"], it.get("section", "")) if o == "move_broll" else _section(p, t)
+        inside = home is not None and home["t"] - 1e-6 <= t and t + d <= home["t"] + home["d"] + 1e-6
+        add(inside, f'Stays inside {home["name"]}' if inside else CROSSES)
+        if inside:
+            ok = home["t"] + EDGE - 1e-6 <= t and t + d <= home["t"] + home["d"] - EDGE + 1e-6
+            add(ok, f'Keeps ≥ {EDGE} s from the edges of {home["name"]}' if ok else
+                f'Within {EDGE} s of the edge of {home["name"]}')
+        if o == "move_broll" and (fit := _long_enough(lib.get(it["tag"], {}), it["tag"], d)):
+            add(*fit)
+        if o == "add_broll":
+            ok = d >= MIN_INSERT - 1e-6
+            add(ok, f"At least {MIN_INSERT:.1f} s long" if ok else f"An insert needs at least {MIN_INSERT:.1f} s")
     if o in ("swap_broll", "add_broll"):
         e = lib.get(op["src"])
         if not e:
@@ -205,17 +276,29 @@ def check(p: dict, op: dict) -> list[dict]:
             add(not e.get("skip"), "Inventory: usable" if not e.get("skip") else f'Inventory says skip: {e.get("use", "")[:80]}')
             span = (e.get("best") or [0, 0])[1] - (e.get("best") or [0, 0])[0]
             length = d if o == "add_broll" else items[op["target"]]["d"]
-            if span > 0:
-                add(length <= span * 2 + 0.2, f"Fits the shot's clean range ({span:.1f} s at 0.5× speed)", hard=False)
+            if fit := _long_enough(e, op["src"], length):
+                add(*fit)
+            if span > 0:  # best is in on-screen seconds for the 2× prerenders
+                k = tag_k(op["src"])
+                add(length <= span / k / SPEED + 0.2, f"Fits the shot's clean range ({span / k:.1f} s at 0.5× speed)", hard=False)
     if o in ("edit_card", "add_card"):
         at = t if o == "add_card" else items[op["target"]]["t"]
         ok, msg, hard = _said_nearby(p, op["lines"], op["caption"], at)
         add(ok, msg, hard)
-        add(1 <= len(op["lines"]) <= 3 and all(len(x) <= 32 for x in op["lines"]), "1–3 short lines", hard=False)
+        n = len(op["lines"])
+        add(1 <= n <= 3, "1–3 lines" if 1 <= n <= 3 else "A card needs 1–3 lines")
+        add(all(len(x) <= 32 for x in op["lines"]), "Short lines (≤ 32 characters)", hard=False)
+        path = next((x for x in op["lines"] + [op.get("caption") or ""] if PATHLIKE.search(x)), None)
+        add(path is None, "No file paths in the text" if path is None else f"Looks like a file path: {path[:60]!r}")
     if o == "move_card":
         it = items[op["target"]]
         ok, msg, hard = _said_nearby(p, it["lines"], it["caption"], t)
         add(ok, msg, hard)
+    if o in ("move_card", "add_card"):
+        until = t + (max(d, CARD_MIN) if o == "add_card" else d)  # Render's until rule
+        ok = until <= p["duration"] - CARD_TAIL + 1e-6
+        add(ok, f"Ends ≥ {CARD_TAIL:g} s before the end" if ok else
+            f"A card ends at least {CARD_TAIL:g} s before the end ({p['duration'] - CARD_TAIL:.2f} s)")
     if o == "cut_span":
         for edge in (t, t + d):
             w = _inside_word(p, edge)
