@@ -42,16 +42,22 @@ explains every decision, using Meta's Muse models.
 - Multicam sync (2026-11-01): `src/ghostcut/sync.py`, the `ghostcut sync` command and `tests/test_sync.py`. It
   places clips from several cameras on one timeline by timecode, capture clock, audio waveform and Whisper words,
   cross-checks the methods and reports clock drift. No Meta model is involved in sync.
+- Multicam angle choice (2026-11-01): `src/ghostcut/angles.py`, the `ghostcut angles` command and
+  `tests/test_angles.py`. Muse Spark looks at a frame from every camera on each spoken line and picks the angle;
+  mechanical checks overrule it, and the cut renders under one uncut audio track. **Designed by Meta's Muse Code
+  agent on Muse Wonder and built by Muse Code on Muse Spark**, then reviewed and fixed by Claude Code; who did what
+  is in [docs/muse-code/BUILD-LOG.md](docs/muse-code/BUILD-LOG.md).
 
-**Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits),
-`muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
+**Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits, multicam
+angle picks), `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
+**Meta tools used:** the Muse Code agent (design and build of `ghostcut angles`).
 Director does not use SAM 3.1 or SAM Audio.
 **Non-Meta tools:** local Whisper (`mlx-whisper`), ffmpeg, pywebview, and in the sample film ElevenLabs
 (music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
 used an AI coding assistant (Claude Code; see commit trailers).
 
-**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), choosing a camera angle per line and
-grading each camera to match (sync is built, the multicam cut is not), the live shoot-date import scan, the
+**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), grading each camera to match (sync and the
+angle cut are built; log footage renders ungraded), the multicam cut in the Director app and its FCPXML, the live shoot-date import scan, the
 Deliver export buttons, SAM Audio remastering.
 **Not in this repo yet:** the work-dir prep (360p proxy, `clip_map.json`, Whisper SRT and words) that `organize`
 reads; the Spark footage inventory, the Wonder opening review and the Voice Transcribe check were one-off calls
@@ -142,6 +148,20 @@ A waveform peak can be confident and wrong, so when Whisper (or, for a weak peak
 the waveform is searched again inside the window that method allows. `sync.json` keeps every estimate, every
 pairwise check and every warning, plus each camera's make, model, lens and gamma (`s-log3-cine`, `hlg`, …) for
 grading. A clip the reference barely hears is tried against the clips already placed.
+
+Then cut between the angles:
+
+```bash
+ghostcut angles --sync project/sync.json --words project/sync-transcripts/C0001-<size>.json \
+  --out project/angles.json --render project/multicam.mp4
+```
+
+The words of the audio clip (the reference unless `--audio B`) are split into lines. For each line, every camera
+that covers it gives one frame, and Muse Spark picks the angle with a reason (needs
+[guestlist](https://github.com/DanielSensual/guestlist) and `MODEL_API_KEY`; `--no-muse` alternates cameras by rule
+instead). Then the checks decide: a camera that does not cover the line is overruled, a shot shorter than
+`--min-shot` (2 s) joins a neighbour that covers it, cuts sit between words on whole frames, and a span no camera
+covers is black, never skipped. The render goes shot by shot under one uncut audio track; log footage stays log.
 
 ## Ghost Captions
 

@@ -552,6 +552,29 @@ def command_sync(args: argparse.Namespace) -> list:
     return results
 
 
+def command_angles(args: argparse.Namespace) -> dict:
+    from .angles import run as run_angles
+
+    if not bool(getattr(args, "no_muse", False)) or getattr(args, "render", None):
+        require_ffmpeg_binaries()
+    payload = run_angles(
+        sync_path=Path(args.sync),
+        words_path=Path(args.words),
+        out_path=Path(args.out),
+        audio_label=args.audio,
+        render_path=Path(args.render) if args.render else None,
+        min_shot_s=float(args.min_shot),
+        model=args.model,
+        no_muse=bool(args.no_muse),
+    )
+    for shot in payload.get("shots", []):
+        for overrule in shot.get("overrules", []):
+            print(f"  shot {shot['id']} {shot['camera']}: {overrule}")
+    n_lines, n_shots = len(payload.get("lines", [])), len(payload.get("shots", []))
+    print(f"{n_lines} lines → {n_shots} shots ({payload.get('method')}, ${payload.get('spend_usd', 0.0):.4f})")
+    return payload
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GhostCut video editing infrastructure")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -636,6 +659,17 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_parser.add_argument("--out", default="sync.json", help="Where to write the sync report")
     sync_parser.set_defaults(func=command_sync)
+
+    angles_parser = sub.add_parser("angles", help="Pick the camera angle for each spoken line")
+    angles_parser.add_argument("--sync", required=True, help="sync.json from ghostcut sync")
+    angles_parser.add_argument("--words", required=True, help="Word-timed Whisper JSON for the audio clip")
+    angles_parser.add_argument("--out", required=True, help="Where to write angles.json")
+    angles_parser.add_argument("--audio", default=None, help="Audio clip label (default: the reference clip)")
+    angles_parser.add_argument("--render", default=None, help="Render the cut to this .mp4 path")
+    angles_parser.add_argument("--min-shot", type=float, default=2.0, help="Shorter shots merge into a neighbour")
+    angles_parser.add_argument("--model", default="muse-spark-1.3")
+    angles_parser.add_argument("--no-muse", action="store_true", help="Use the deterministic rule fallback")
+    angles_parser.set_defaults(func=command_angles)
 
     return parser
 
