@@ -607,6 +607,28 @@ def command_angles(args: argparse.Namespace) -> dict:
     return payload
 
 
+def command_reframe(args: argparse.Namespace) -> dict:
+    from .reframe import run as run_reframe
+
+    require_ffmpeg_binaries()
+    payload = run_reframe(
+        video=Path(args.video),
+        out_json=Path(args.out),
+        render_path=Path(args.render) if args.render else None,
+        shots_path=Path(args.shots) if args.shots else None,
+        no_sam=bool(args.no_sam),
+        max_usd=float(args.max_usd),
+    )
+    for shot in payload.get("shots", []):
+        follow = f"follows {shot['subject']}" if shot["method"] == "subject" else "centred"
+        print(f"  shot {shot['id']} {shot['start_s']:.2f}-{shot['end_s']:.2f}s: {follow} ({shot['reason']})")
+    for warning in payload.get("warnings", []):
+        print(f"! {warning}")
+    print(f"{len(payload.get('shots', []))} shots, {payload['method']}, "
+          f"{payload.get('frames_billed', 0)} SAM frames, ${payload.get('spend_usd', 0.0):.4f}")
+    return payload
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GhostCut video editing infrastructure")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -714,6 +736,15 @@ def build_parser() -> argparse.ArgumentParser:
     grade_parser.add_argument("--check", action="store_true", help="Ask Muse Spark to check the match")
     grade_parser.add_argument("--model", default="muse-spark-1.3")
     grade_parser.set_defaults(func=command_grade)
+
+    reframe_parser = sub.add_parser("reframe", help="Vertical 9:16 cut that follows the speaker (SAM 3.1)")
+    reframe_parser.add_argument("video", help="A finished 16:9 cut")
+    reframe_parser.add_argument("--out", required=True, help="Where to write reframe.json")
+    reframe_parser.add_argument("--render", default=None, help="Render the vertical cut to this .mp4 path")
+    reframe_parser.add_argument("--shots", default=None, help="angles.json with exact cut times (default: scene detection)")
+    reframe_parser.add_argument("--no-sam", action="store_true", help="Centre every shot (no Meta API call)")
+    reframe_parser.add_argument("--max-usd", type=float, default=2.0, help="Refuse a SAM pass estimated above this")
+    reframe_parser.set_defaults(func=command_reframe)
 
     return parser
 

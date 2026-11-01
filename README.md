@@ -52,11 +52,16 @@ explains every decision, using Meta's Muse models.
   matches every camera's exposure and white balance to a reference, and can ask Muse Spark to check the match (it
   reports, it never adjusts). Designed by Muse Code on Muse Wonder, built by Muse Code on Muse Spark, reviewed, fixed
   and live-tested by Claude Code (same build log).
+- Vertical reframe (2026-11-01): `src/ghostcut/reframe.py`, the `ghostcut reframe` command and
+  `tests/test_reframe.py`. **SAM 3.1** tracks every person through a finished 16:9 cut; per shot GhostCut follows
+  the on-camera subject and renders a smoothed 9:16 crop for Reels and Shorts, with cuts found to the exact frame.
+  About $0.07 of SAM per minute of video. Built and live-tested by Claude Code with the owner; the SAM client is
+  guestlist's (also built during the event).
 
 **Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits, multicam
-angle picks, grade checks), `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
+angle picks, grade checks), `muse-wonder-1.0` (QC and an opening review), `sam-3.1` (speaker tracking for the vertical reframe) and `muse-voice-transcribe-1.0` (one diarization check).
 **Meta tools used:** the Muse Code agent (design and build of `ghostcut angles` and `ghostcut grade`).
-Director does not use SAM 3.1 or SAM Audio.
+SAM 3.1 is used only by `ghostcut reframe`; SAM Audio is not used.
 **Non-Meta tools:** local Whisper (`mlx-whisper`), ffmpeg, pywebview, and in the sample film ElevenLabs
 (music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
 used an AI coding assistant (Claude Code; see commit trailers).
@@ -174,6 +179,18 @@ Grade the cameras to match before the render:
 ghostcut grade --sync project/sync.json --out project/grade/grade.json [--lut A=house-look.cube] [--check]
 ghostcut angles ... --grade project/grade/grade.json --render project/multicam.mp4
 ```
+
+Make a vertical version for Reels and Shorts that follows the speaker:
+
+```bash
+ghostcut reframe project/multicam.mp4 --out project/reframe.json --render project/multicam-9x16.mp4 \
+  [--shots project/angles.json] [--max-usd 2] [--no-sam]
+```
+
+SAM 3.1 tracks people on a 5 fps proxy (needs guestlist and `MODEL_API_KEY`); each shot follows the person on screen
+most and largest, or stays centred when nobody qualifies (B-roll, a passer-by). Cuts come from `--shots` or scene
+detection refined to the exact frame, so the crop jumps only at a cut and moves at most a pixel or two per frame
+inside a shot. The estimate is checked against `--max-usd` before any paid call; reruns are served from cache.
 
 S-Log3 (S-Gamut3 / S-Gamut3.Cine) and HLG get a 33-point LUT generated from the published curves (Sony's S-Log3,
 ITU-R BT.2100 HLG with BT.2408 exposure) and gamut matrices derived from the primaries, with a soft highlight
