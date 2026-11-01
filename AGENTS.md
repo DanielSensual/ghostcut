@@ -18,6 +18,7 @@ Two pipelines share one package:
 
 - **Rough-cut** (`cli.py: run/ingest/analyze/assemble/export`): `ingest.py` (discovery, proxy/audio extraction, layer classification) → `shot_analysis.py` + `audio_analysis.py` + `scoring.py` → `assembler.py` + `story_template.py` + `broll.py` → `export_fcpxml.py` / `export_otio.py`. `review.py` collects low-confidence decisions. All artifacts are JSON files under the project dir (see `config.py` for paths).
 - **Recap** (`cli.py: recap`, package `recap/`): `beat.py` (BPM/phase comb-fit) → `motion.py` (frame-diff peaks, whip-pan rejection) → `faces.py` (YuNet frontality, SFace embeddings) → `casting.py`/`select.py` (slot patterns, person exclusion) → `stabilize.py` (vid.stab two-pass) → `render.py` (beat-offset cuts, xfade).
+- **Multicam sync** (`cli.py: sync`, `sync.py`): per-clip offsets from timecode, capture clock, speech-envelope cross-correlation (numpy, `[sync]` extra) and Whisper phrase votes, cross-checked; a global waveform peak that Whisper contradicts is re-searched inside Whisper's window (short clips latch onto the wrong loud section with confident scores).
 - `adapters/` — pluggable transcribers (`null`, `openai`). `models.py` holds dataclasses; artifacts serialize via `dataclass_to_dict`.
 - `scripts/ghost-captions.cjs` — self-contained Node caption engine (Whisper words JSON → ASS karaoke-pop → ffmpeg burn). Treat as stable; extend via new style presets rather than rewrites.
 

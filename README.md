@@ -39,6 +39,9 @@ explains every decision, using Meta's Muse models.
   `test_make_demo_timeline.py`. It re-renders only the sections that accepted edits touch, rebuilds the voice
   sample-exact from the section audio and the cached voice isolation (no paid call), redoes the fact cards, music
   mix and phone copy, and promotes the new version only after its measured checks pass. Revert goes back one version.
+- Multicam sync (2026-11-01): `src/ghostcut/sync.py`, the `ghostcut sync` command and `tests/test_sync.py`. It
+  places clips from several cameras on one timeline by timecode, capture clock, audio waveform and Whisper words,
+  cross-checks the methods and reports clock drift. No Meta model is involved in sync.
 
 **Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits),
 `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
@@ -47,7 +50,8 @@ Director does not use SAM 3.1 or SAM Audio.
 (music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
 used an AI coding assistant (Claude Code; see commit trailers).
 
-**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), the live shoot-date import scan, the
+**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), choosing a camera angle per line and
+grading each camera to match (sync is built, the multicam cut is not), the live shoot-date import scan, the
 Deliver export buttons, SAM Audio remastering.
 **Not in this repo yet:** the work-dir prep (360p proxy, `clip_map.json`, Whisper SRT and words) that `organize`
 reads; the Spark footage inventory, the Wonder opening review and the Voice Transcribe check were one-off calls
@@ -114,6 +118,30 @@ What it does under the hood:
 - **Render** — shots offset so their motion peak hits a beat, crossfades centered on cut boundaries, `--versions N --strategies cast,classic,energy` renders differently-edited alternatives
 
 Face-detection models download automatically to `~/.cache/ghostcut/models/` on first use.
+
+## Multicam sync
+
+```bash
+pip install -e ".[sync]"      # numpy, for waveform sync
+ghostcut sync a-cam/C0001.MP4 b-cam/C0412.MP4 iphone/IMG_0081.MOV --out project/sync.json
+```
+
+Every clip gets an offset on one timeline (the longest clip sits at 0; change it with `--reference`), measured
+up to four ways and cross-checked:
+
+- **timecode** — start timecode from the file or Sony's XML sidecar, NTSC and drop-frame aware. Exact only when the
+  cameras were jammed; free-running timecode is reported and flagged when it disagrees.
+- **clock** — the capture time in the metadata (the iPhone's capture date, not the copy time). Coarse; it narrows
+  a search or places a silent clip, flagged for a check by eye.
+- **waveform** — log speech envelopes cross-correlated at 10 ms, refined to 1 ms, then re-measured in 20 s windows
+  to report clock drift (ppm) and the offset at the clip's first frame.
+- **whisper** — three-word phrases that occur once in each transcript vote for an offset (local `mlx_whisper`, or
+  `--transcripts DIR` of word-timed Whisper JSON).
+
+A waveform peak can be confident and wrong, so when Whisper (or, for a weak peak, timecode or the clock) disagrees,
+the waveform is searched again inside the window that method allows. `sync.json` keeps every estimate, every
+pairwise check and every warning, plus each camera's make, model, lens and gamma (`s-log3-cine`, `hlg`, …) for
+grading. A clip the reference barely hears is tried against the clips already placed.
 
 ## Ghost Captions
 

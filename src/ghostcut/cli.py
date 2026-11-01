@@ -506,6 +506,52 @@ def command_recap(args: argparse.Namespace) -> dict:
     return reports
 
 
+def command_sync(args: argparse.Namespace) -> list:
+    from .sync import load_words, probe_camera, sync_clips, transcribe_words
+
+    require_ffmpeg_binaries()
+    clips = [Path(c) for c in args.clips]
+    for clip in clips:
+        if not clip.exists():
+            raise FileNotFoundError(f"Clip not found: {clip}")
+    cameras = [probe_camera(c) for c in clips]
+    if args.reference:
+        names = [c.resolve() for c in clips]
+        if Path(args.reference).resolve() not in names:
+            raise ValueError("--reference must be one of the clips")
+        reference = names.index(Path(args.reference).resolve())
+    else:  # the longest clip is the one most likely to overlap all the others
+        reference = max(range(len(cameras)), key=lambda i: cameras[i].duration_s)
+    methods = tuple(m.strip() for m in args.methods.split(",") if m.strip())
+    out = Path(args.out)
+    cache = out.parent / "sync-transcripts"
+
+    def words(path: str):
+        if args.transcripts:
+            given = Path(args.transcripts) / f"{Path(path).stem}.json"
+            return load_words(given) if given.exists() else None
+        print(f"  transcribing {Path(path).name} (local Whisper)")
+        return transcribe_words(Path(path), cache)
+
+    print(f"Syncing {len(clips)} clips by {', '.join(methods)}")
+    results = sync_clips(cameras, methods=methods, reference=reference, words=words, log=print)
+    write_json(out, {"reference": cameras[reference].path, "methods": list(methods),
+                     "clips": [dataclass_to_dict(r) for r in results]})
+    print(f"\n{'':2} {'clip':<16} {'camera':<22} {'gamma':<12} {'fps':>7} {'offset s':>10}  method")
+    for r in results:
+        cam = r.camera
+        offset = "—" if r.offset_s is None else f"{r.offset_s:+.3f}"
+        print(f"{r.label:<2} {Path(cam.path).name:<16} {cam.name[:22]:<22} {cam.gamma[:12]:<12} "
+              f"{cam.fps:>7.3f} {offset:>10}  {r.method or 'not placed'}")
+        for check in r.checks:
+            mark = "agree" if check["agree"] else "DISAGREE"
+            print(f"{'':5}{check['a']} vs {check['b']}: {check['delta_s']:+.3f} s {mark}")
+        for warning in r.warnings:
+            print(f"{'':5}! {warning}")
+    print(f"\nWrote {out}")
+    return results
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="GhostCut video editing infrastructure")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -575,6 +621,21 @@ def build_parser() -> argparse.ArgumentParser:
     recap_parser.add_argument("--no-stabilize", action="store_true")
     recap_parser.add_argument("--no-transitions", action="store_true")
     recap_parser.set_defaults(func=command_recap)
+
+    sync_parser = sub.add_parser(
+        "sync", help="Put clips from several cameras on one timeline (timecode, waveform and Whisper, cross-checked)")
+    sync_parser.add_argument("clips", nargs="+", help="One clip per camera angle (or several takes)")
+    sync_parser.add_argument("--reference", default=None, help="Clip that sits at 0 (default: the longest)")
+    sync_parser.add_argument(
+        "--methods", default="timecode,clock,waveform,whisper",
+        help="Comma list from timecode, clock, waveform, whisper (waveform needs the [sync] extra)",
+    )
+    sync_parser.add_argument(
+        "--transcripts", default=None,
+        help="Folder of word-timed Whisper JSON named <clip stem>.json (default: transcribe with local mlx_whisper)",
+    )
+    sync_parser.add_argument("--out", default="sync.json", help="Where to write the sync report")
+    sync_parser.set_defaults(func=command_sync)
 
     return parser
 

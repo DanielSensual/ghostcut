@@ -19,6 +19,7 @@ Repository = "https://github.com/DanielSensual/ghostcut"
 [project.optional-dependencies]
 openai = ["openai>=1.40.0"]
 recap = ["opencv-python>=4.10", "numpy>=1.26"]
+sync = ["numpy>=1.26"]
 test = ["pytest>=8.2.0"]
 
 [project.scripts]
