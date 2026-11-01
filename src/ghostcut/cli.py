@@ -552,10 +552,41 @@ def command_sync(args: argparse.Namespace) -> list:
     return results
 
 
+def command_grade(args: argparse.Namespace) -> dict:
+    from .grade import run as run_grade
+
+    if not bool(args.no_match) or bool(args.check):
+        require_ffmpeg_binaries()
+    payload = run_grade(
+        sync_path=Path(args.sync),
+        out_path=Path(args.out),
+        reference_label=args.reference,
+        lut_specs=list(args.lut or []),
+        no_match=bool(args.no_match),
+        check=bool(args.check),
+        model=args.model,
+    )
+    for camera in payload.get("cameras", []):
+        match = camera.get("match", {})
+        line = f"{camera['label']} {camera.get('gamma', '')} {camera['conversion']['kind']}"
+        if match.get("matched"):
+            gains = ",".join(str(value) for value in match["gain"])
+            offsets = ",".join(str(value) for value in match["offset"])
+            line += f" gain {gains} offset {offsets}"
+            if any(match["gain_clamped"]) or any(match["offset_clamped"]):
+                line += " clamped"
+        print(line)
+    for warning in payload.get("warnings", []):
+        print(f"! {warning}")
+    print(f"Wrote {args.out}")
+    return payload
+
+
 def command_angles(args: argparse.Namespace) -> dict:
     from .angles import run as run_angles
 
-    if not bool(getattr(args, "no_muse", False)) or getattr(args, "render", None):
+    if (not bool(getattr(args, "no_muse", False)) or getattr(args, "render", None)
+            or getattr(args, "grade", None)):
         require_ffmpeg_binaries()
     payload = run_angles(
         sync_path=Path(args.sync),
@@ -566,6 +597,7 @@ def command_angles(args: argparse.Namespace) -> dict:
         min_shot_s=float(args.min_shot),
         model=args.model,
         no_muse=bool(args.no_muse),
+        grade_path=Path(args.grade) if getattr(args, "grade", None) else None,
     )
     for shot in payload.get("shots", []):
         for overrule in shot.get("overrules", []):
@@ -669,7 +701,19 @@ def build_parser() -> argparse.ArgumentParser:
     angles_parser.add_argument("--min-shot", type=float, default=2.0, help="Shorter shots merge into a neighbour")
     angles_parser.add_argument("--model", default="muse-spark-1.3")
     angles_parser.add_argument("--no-muse", action="store_true", help="Use the deterministic rule fallback")
+    angles_parser.add_argument("--grade", default=None, help="grade.json from ghostcut grade")
     angles_parser.set_defaults(func=command_angles)
+
+    grade_parser = sub.add_parser("grade", help="Grade each camera to Rec.709 and match to a reference")
+    grade_parser.add_argument("--sync", required=True, help="sync.json from ghostcut sync")
+    grade_parser.add_argument("--out", required=True, help="Where to write grade.json")
+    grade_parser.add_argument("--reference", default=None, help="Reference camera label (default: the sync reference)")
+    grade_parser.add_argument("--lut", action="append", default=[],
+                              help="Supplied .cube as LABEL=PATH (repeatable)")
+    grade_parser.add_argument("--no-match", action="store_true", help="Write conversions only, skip matching")
+    grade_parser.add_argument("--check", action="store_true", help="Ask Muse Spark to check the match")
+    grade_parser.add_argument("--model", default="muse-spark-1.3")
+    grade_parser.set_defaults(func=command_grade)
 
     return parser
 

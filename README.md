@@ -47,17 +47,22 @@ explains every decision, using Meta's Muse models.
   mechanical checks overrule it, and the cut renders under one uncut audio track. **Designed by Meta's Muse Code
   agent on Muse Wonder and built by Muse Code on Muse Spark**, then reviewed and fixed by Claude Code; who did what
   is in [docs/muse-code/BUILD-LOG.md](docs/muse-code/BUILD-LOG.md).
+- Per-camera grading (2026-11-01): `src/ghostcut/grade.py`, the `ghostcut grade` command, `angles --grade` and
+  `tests/test_grade.py`. Converts S-Log3 and iPhone HLG to Rec.709 with LUTs generated from the published curves,
+  matches every camera's exposure and white balance to a reference, and can ask Muse Spark to check the match (it
+  reports, it never adjusts). Designed by Muse Code on Muse Wonder, built by Muse Code on Muse Spark, reviewed, fixed
+  and live-tested by Claude Code (same build log).
 
 **Meta models used:** `muse-spark-1.3` (take logs, B-roll plans, QC, footage inventory, Muse edits, multicam
-angle picks), `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
-**Meta tools used:** the Muse Code agent (design and build of `ghostcut angles`).
+angle picks, grade checks), `muse-wonder-1.0` (QC and an opening review) and `muse-voice-transcribe-1.0` (one diarization check).
+**Meta tools used:** the Muse Code agent (design and build of `ghostcut angles` and `ghostcut grade`).
 Director does not use SAM 3.1 or SAM Audio.
 **Non-Meta tools:** local Whisper (`mlx-whisper`), ffmpeg, pywebview, and in the sample film ElevenLabs
 (music and voice isolation). The brand art in `docs/brand/` was made with ChatGPT image generation. Development
 used an AI coding assistant (Claude Code; see commit trailers).
 
-**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), grading each camera to match (sync and the
-angle cut are built; log footage renders ungraded), the multicam cut in the Director app and its FCPXML, the live shoot-date import scan, the
+**Not built yet:** cutting talk (Render v1 can't, so Muse blocks `cut_span`), the multicam cut and grade in the Director app and
+its FCPXML, PQ (HDR10) footage in `grade`, the live shoot-date import scan, the
 Deliver export buttons, SAM Audio remastering.
 **Not in this repo yet:** the work-dir prep (360p proxy, `clip_map.json`, Whisper SRT and words) that `organize`
 reads; the Spark footage inventory, the Wonder opening review and the Voice Transcribe check were one-off calls
@@ -161,7 +166,21 @@ that covers it gives one frame, and Muse Spark picks the angle with a reason (ne
 [guestlist](https://github.com/DanielSensual/guestlist) and `MODEL_API_KEY`; `--no-muse` alternates cameras by rule
 instead). Then the checks decide: a camera that does not cover the line is overruled, a shot shorter than
 `--min-shot` (2 s) joins a neighbour that covers it, cuts sit between words on whole frames, and a span no camera
-covers is black, never skipped. The render goes shot by shot under one uncut audio track; log footage stays log.
+covers is black, never skipped. The render goes shot by shot under one uncut audio track.
+
+Grade the cameras to match before the render:
+
+```bash
+ghostcut grade --sync project/sync.json --out project/grade/grade.json [--lut A=house-look.cube] [--check]
+ghostcut angles ... --grade project/grade/grade.json --render project/multicam.mp4
+```
+
+S-Log3 (S-Gamut3 / S-Gamut3.Cine) and HLG get a 33-point LUT generated from the published curves (Sony's S-Log3,
+ITU-R BT.2100 HLG with BT.2408 exposure) and gamut matrices derived from the primaries, with a soft highlight
+shoulder; Rec.709 needs none; PQ is not supported yet. `--lut LABEL=PATH` uses your own LUT for a camera instead.
+Then each camera's exposure and white balance are matched to the reference (`--reference`, default the sync
+reference) from centre-frame samples at moments both cameras recorded, as pure gains (black stays black), clamped
+and reported before and after. `--check` asks Muse Spark which camera still stands out; it only reports.
 
 ## Ghost Captions
 

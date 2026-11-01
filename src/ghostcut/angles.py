@@ -17,6 +17,7 @@ from pathlib import Path
 
 from .config import read_json, write_json
 from .ffmpeg_tools import ToolingError, run_command, snap_frame_rate
+from .grade import GradeError, GradeShotInfo, SourceColour, lut_filter_chain
 
 PAUSE_S = 0.6
 MAX_LINE_S = 8.0
@@ -216,6 +217,37 @@ def load_sync(path: Path) -> tuple[str, list[SyncClip]]:
             duration_s=float(cam.get("duration_s") or 0.0),
         ))
     return reference, clips
+
+
+def load_grade(path: Path) -> dict[str, GradeShotInfo]:
+    """grade.json LUTs by camera label; lut:null renders the legacy look."""
+    data = read_json(Path(path))
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ValueError(f"Not a grade.json: {path}")
+    base = Path(path).parent
+    out: dict[str, GradeShotInfo] = {}
+    for item in data.get("cameras", []):
+        label = str(item.get("label") or "")
+        lut = item.get("lut")
+        seen = item.get("source_colour") or {}
+        colour = SourceColour(
+            range=str(seen.get("range") or "tv"),
+            space=str(seen.get("space") or "bt709"),
+            primaries=str(seen.get("primaries") or "bt709"),
+            transfer=str(seen.get("transfer") or ""),
+            pix_fmt=str(seen.get("pix_fmt") or ""),
+            bits=int(seen.get("bits") or 8),
+        )
+        if lut is None:
+            out[label] = GradeShotInfo(label, None, colour)
+            continue
+        if "'" in str(lut) or ":" in str(lut):
+            raise GradeError(f"Grade LUT path cannot contain ' or :: {lut}")
+        resolved = base / str(lut)
+        if not resolved.exists():
+            raise ValueError(f"Grade LUT missing for camera {label}: {resolved}")
+        out[label] = GradeShotInfo(label, resolved, colour)
+    return out
 
 
 def covers(clip: SyncClip, line: Line) -> bool:
@@ -661,22 +693,29 @@ def frame_grid(shots: list[Shot], fps: float) -> list[float]:
 
 
 def render_commands(shots: list[Shot], clips_by_label: dict[str, SyncClip], audio: SyncClip,
-                    out: Path) -> tuple[list[list[str]], str, list[str]]:
+                    out: Path, *,
+                    grade: dict[str, GradeShotInfo] | None = None) -> tuple[list[list[str]], str, list[str]]:
     """One ffmpeg run per shot, then a stream-copy join with the uncut audio laid under it.
 
     Shot by shot keeps one camera decoder open at a time: a single filtergraph over every 4K input
     peaked at 2.3 GB for 7 shots. Each part is cut to a whole number of frames on the shared grid,
     so the joined picture is exactly as long as the audio span.
+    With a grade, each camera shot renders through its LUT; black shots and
+    cameras without a cube keep the legacy look. Without one, every command
+    is byte-identical to the ungraded render.
     Returns (part commands, concat list text, final command).
     """
     if not shots:
         raise ValueError("nothing to render")
+    if grade is not None:
+        unknown = sorted(set(grade) - set(clips_by_label))
+        if unknown:
+            raise ValueError(f"Grade has cameras not in sync.json: {', '.join(unknown)}")
     fps_s = _out_fps(audio)
     rate = snap_frame_rate(audio.fps) if audio.fps > 0 else Fraction(30)
     edges = frame_grid(shots, audio.fps)
     parts_dir = Path(out).with_name(Path(out).stem + ".parts")
-    look = (f"scale={OUT_W}:{OUT_H}:force_original_aspect_ratio=decrease:flags=lanczos,"
-            f"pad={OUT_W}:{OUT_H}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps={fps_s},format=yuv420p")
+    look = lut_filter_chain(SourceColour(), None, fps_s)
     parts: list[list[str]] = []
     listing: list[str] = []
     for i, shot in enumerate(shots):
@@ -690,8 +729,15 @@ def render_commands(shots: list[Shot], clips_by_label: dict[str, SyncClip], audi
             clip_in = shot.clip_in_s + (edges[i] - shot.start_s)
             # a second of slack after the cut; -frames:v makes the exact length
             cmd += ["-ss", f"{clip_in:.6f}", "-t", f"{dur + 1:.6f}", "-i", clips_by_label[shot.camera].path]
-        cmd += ["-map", "0:v:0", "-vf", look, "-frames:v", str(frames), "-an",
-                "-c:v", "libx264", "-preset", "medium", "-crf", "16", str(part)]
+        info = grade.get(shot.camera) if grade is not None else None
+        vf = lut_filter_chain(info.colour, info.lut, fps_s) if info and info.lut else look
+        cmd += ["-map", "0:v:0", "-vf", vf, "-frames:v", str(frames), "-an",
+                "-c:v", "libx264", "-preset", "medium", "-crf", "16"]
+        if grade is not None:
+            # the join is stream copy, so part tags are the output tags
+            cmd += ["-color_primaries", "bt709", "-color_trc", "bt709",
+                    "-colorspace", "bt709", "-color_range", "tv"]
+        cmd += [str(part)]
         parts.append(cmd)
         listing.append(f"file '{part.resolve().as_posix()}'")
     span = edges[-1] - edges[0]
@@ -704,7 +750,8 @@ def render_commands(shots: list[Shot], clips_by_label: dict[str, SyncClip], audi
 
 
 def render(shots: list[Shot], clips_by_label: dict[str, SyncClip],
-           audio: SyncClip, out: Path) -> None:
+           audio: SyncClip, out: Path,
+           grade: dict[str, GradeShotInfo] | None = None) -> None:
     for shot in shots:
         if shot.camera == "black":
             continue
@@ -713,7 +760,7 @@ def render(shots: list[Shot], clips_by_label: dict[str, SyncClip],
             raise ToolingError(f"Clip file missing for camera {shot.camera}")
     if not Path(audio.path).exists():
         raise ToolingError(f"Audio file missing: {audio.path}")
-    parts, listing, final = render_commands(shots, clips_by_label, audio, out)
+    parts, listing, final = render_commands(shots, clips_by_label, audio, out, grade=grade)
     parts_dir = Path(out).with_name(Path(out).stem + ".parts")
     parts_dir.mkdir(parents=True, exist_ok=True)
     for cmd in parts:
@@ -725,10 +772,16 @@ def render(shots: list[Shot], clips_by_label: dict[str, SyncClip],
 # ---------------------------------------------------------------- orchestrator
 
 def run(*, sync_path: Path, words_path: Path, out_path: Path, audio_label: str | None,
-        render_path: Path | None, min_shot_s: float, model: str, no_muse: bool) -> dict:
+        render_path: Path | None, min_shot_s: float, model: str, no_muse: bool,
+        grade_path: Path | None = None) -> dict:
     """Load, pick angles, check, optionally render, and write angles.json."""
     sync_path, words_path, out_path = Path(sync_path), Path(words_path), Path(out_path)
     reference, clips = load_sync(sync_path)
+    grade = load_grade(grade_path) if grade_path is not None else None
+    if grade is not None:
+        unknown = sorted(set(grade) - {c.label for c in clips})
+        if unknown:
+            raise ValueError(f"Grade has cameras not in {sync_path}: {', '.join(unknown)}")
     words = load_timed_words(words_path)
     lines = split_lines(words)
     for line in lines:
@@ -779,15 +832,24 @@ def run(*, sync_path: Path, words_path: Path, out_path: Path, audio_label: str |
     for line in lines:
         if not line.cameras:
             warnings.append(f"line L{line.id} has no covering camera")
+    if grade is not None:
+        for missing in sorted({s.camera for s in shots if s.camera != "black"} - set(grade)):
+            warnings.append(f"grade_missing_camera:{missing}")
     if render_path is not None:
         if not shots:
             raise ValueError("nothing to render")
-        render(shots, by_label, audio, Path(render_path))
+        render(shots, by_label, audio, Path(render_path), grade=grade)
+
+    def shot_lut(shot: Shot) -> str | None:
+        info = grade.get(shot.camera) if grade is not None else None
+        return info.lut.name if info and info.lut else None
+
     payload = {
         "version": 1,
         "sync": str(sync_path),
         "words": str(words_path),
         "reference": reference,
+        "grade": str(grade_path) if grade_path is not None else None,
         "audio": {"label": audio.label, "clip_path": audio.path,
                   "offset_s": None if audio.offset_s is None else round(audio.offset_s, 3)},
         "method": method,
@@ -802,7 +864,8 @@ def run(*, sync_path: Path, words_path: Path, out_path: Path, audio_label: str |
             "camera": s.camera, "clip_path": s.clip_path,
             "clip_in_s": round(s.clip_in_s, 3), "clip_out_s": round(s.clip_out_s, 3),
             "line_ids": list(s.line_ids), "shot_size": s.shot_size, "reason": s.reason,
-            "method": s.method, "overrules": list(s.overrules)} for s in shots],
+            "method": s.method, "overrules": list(s.overrules),
+            "lut": shot_lut(s)} for s in shots],
     }
     write_json(out_path, payload)
     return payload

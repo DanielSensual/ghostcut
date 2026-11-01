@@ -34,3 +34,29 @@ output. At list price with no cache discount that is at most about $6.20 of the 
   46.2 / 44.8 one frame either side): the cut is frame-accurate.
 - `ghostcut angles --render` with Muse Spark: 14 lines in 4 calls, $0.032, 5 shots; every reason describes the
   frame (framing, gaze, gesture).
+
+# Build log: `ghostcut grade` (2026-11-01)
+
+| Step | By | What |
+|---|---|---|
+| Brief | Project owner, with Claude Code | `GRADE-BRIEF.md`. |
+| Design | Muse Code 1.4.13 on `muse-wonder-1.0` (effort high, contributor mode off) | `GRADE-DESIGN.md` §1–12: the S-Log3 and HLG maths with sources, gamut matrices derived from primaries, the shoulder, `.cube` rules, the per-shot ffmpeg chain, sampling, the match, the Muse check prompt and schema. 9 calls. |
+| Design review | Claude Code | §13: HLG exposure by ITU-R BT.2408 (reference white at 0.75; without it the iPhone renders ~1.9 stops dark), explicit BT.709 matrix on the way out, no absolute paths. |
+| Build | Muse Code 1.4.13 on `muse-spark-1.3` (effort high, contributor mode off) | `src/ghostcut/grade.py`, `tests/test_grade.py` (44 tests), `grade` and `angles --grade` in `cli.py`, the `--grade` path in `angles.py`. 33 calls. |
+| Code review, fixes, live test | Claude Code | §14 of the design. |
+
+Muse Code token use: Wonder 659k input (527k cached) + 33k output; Spark 4.80M input (4.59M cached) + 79k output.
+At list price with no cache discount that is at most about $9.60 of the event's Meta API credit.
+
+## Live test (2026-11-01)
+
+- An A7S III S-Log3 clip (10-bit 4:2:2, flagged full range) and an iPhone 17 Pro HLG clip converted through the
+  real per-shot chain: natural Rec.709 for both, sky detail kept, the iPhone at normal exposure.
+- Matching, on one real clip made into two cameras (wide and punch-in), the punch-in given a cast:
+  - gain-only cast: gains 1.32 / 1.23 / 1.11 against an ideal 1.28 / 1.18 / 1.06 (the wide frame's centre holds a
+    dark table the close one doesn't); the matched frame is 32.1 dB PSNR from the uncast original, up from 20.5 dB.
+  - harsh cast (gain, offset, lower contrast): measured means land within 0.012 of the reference, but pure gains
+    cannot undo an offset and blue hits its clamp; the matched shot stays a little bright and warm, and the Muse
+    check named exactly that ("B brighter, warmer") on all three moments, for $0.027.
+- `angles --grade --render`: graded shots use their camera's cube, the Rec.709 reference renders untouched, the
+  output is tagged BT.709 limited, video and audio both 59.977 s, 1.4 GB peak memory.
