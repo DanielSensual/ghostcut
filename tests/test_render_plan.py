@@ -432,6 +432,8 @@ class MakePlan(Base):
                  (op("edit_card", "c1", lines=["A", "B", "C", "D"]), "1–3 lines"),
                  (op("edit_card", "c1", lines=["W" * 80]), "too wide"), (op("drop_card", "c9"), "No card")]
         for o, msg in cases:
+            if msg == "too wide" and rp.line_px("W", 60) is None:
+                continue  # width is measured with the card face, which only macOS ships
             _, refused = self.plan(edit("e1", o))
             self.assertIn(msg, refused[0]["reason"] if refused else "", o)
 

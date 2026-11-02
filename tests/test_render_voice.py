@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,7 +12,12 @@ from fractions import Fraction
 from pathlib import Path
 from unittest import mock
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    raise unittest.SkipTest("needs numpy (pip install -e \".[director]\")")
+if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+    raise unittest.SkipTest("needs ffmpeg and ffprobe on PATH")
 
 APP = Path(__file__).resolve().parents[1] / "app"
 sys.path.insert(0, str(APP))

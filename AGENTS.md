@@ -10,7 +10,7 @@ pip install -e .                                      # core has zero dependenci
 python -m unittest discover -s tests -p 'test_*.py'   # <1s, needs no ffmpeg or media
 ```
 
-`pip install -e ".[recap]"` adds opencv+numpy for the recap module. The integration test and recap tests self-skip when their prerequisites (sample media, extras) are absent — a green run with skips is normal.
+`pip install -e ".[recap]"` adds opencv+numpy for the recap module; `".[director]"` adds numpy+Pillow for the Director app tests, which also need ffmpeg/ffprobe on PATH. Tests self-skip when their prerequisites (sample media, extras, ffmpeg, the macOS card font) are absent — a green run with skips is normal. CI runs both ways: `core` bare, `recap-extra` with every extra and ffmpeg.
 
 ## Architecture
 

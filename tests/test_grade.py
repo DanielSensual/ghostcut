@@ -7,9 +7,11 @@ import tempfile
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from ghostcut.grade import (
     CHECK_DEVELOPER,
+    CheckUnavailable,
     ChannelStats,
     Cube,
     GradeClip,
@@ -556,10 +558,9 @@ class FakeCheckTests(unittest.TestCase):
         self.assertIn("t=3.0s", prompt)
 
     def test_check_unavailable_without_guestlist(self) -> None:
-        sys.modules.pop("guestlist", None)
-        sys.modules.pop("guestlist.meta", None)
-        with tempfile.TemporaryDirectory() as tmp:
-            with self.assertRaises(Exception):
+        hidden = {"guestlist": None, "guestlist.meta": None}  # None makes the import fail even when installed
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(sys.modules, hidden):
+            with self.assertRaises(CheckUnavailable):
                 check_with_muse(self._frames(tmp), ["A", "B"], model="m")
 
 

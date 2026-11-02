@@ -5,6 +5,7 @@ import copy
 import io
 import json
 import os
+import shutil
 import signal
 import subprocess
 import sys
@@ -21,6 +22,8 @@ sys.path.insert(0, str(APP))
 import render  # noqa: E402
 
 PY = sys.executable
+needs_ffmpeg = unittest.skipUnless(shutil.which("ffmpeg") and shutil.which("ffprobe"),
+                                   "needs ffmpeg and ffprobe on PATH")
 REAL_TRANSCRIBE, REAL_LOUDNESS = render._transcribe, render._loudness
 
 
@@ -332,6 +335,7 @@ class PlanAndVersionTests(RenderCase):
 
 
 class RunTests(RenderCase):
+    @needs_ffmpeg
     def test_run_renders_dirty_section_checks_and_promotes(self) -> None:
         res = render.run(self.demo, "r001")
         self.assertEqual(res["state"], "promoted", res["message"])
@@ -403,6 +407,7 @@ class RunTests(RenderCase):
         st = render.status(self.demo)
         self.assertEqual((st["state"], st["version"], st["current"]), ("promoted", "r001", "r001"))
 
+    @needs_ffmpeg
     def test_revert_restores_previous_cut_and_its_edits(self) -> None:
         self.assertEqual(render.run(self.demo, "r001")["state"], "promoted")
         self.assertEqual(render.revert(self.demo), {"version": "legacy", "reverted": "r001"})
@@ -421,6 +426,7 @@ class RunTests(RenderCase):
         self.assertEqual(render.run(self.demo, "r002")["state"], "promoted")
         self.assertEqual(self.j(self.demo / "current.json")["previous"], "legacy")
 
+    @needs_ffmpeg
     def test_revert_refuses_while_accepted_edits_wait_to_render(self) -> None:
         self.assertEqual(render.run(self.demo, "r001")["state"], "promoted")
         e5, e6 = edit("e5", "add_note", t=15.0, why="Porch"), edit("e6", "add_note", t=16.0, why="Door")
@@ -438,6 +444,7 @@ class RunTests(RenderCase):
         self.set_edits([])
         self.assertEqual(render.revert(self.demo), {"version": "legacy", "reverted": "r001"})
 
+    @needs_ffmpeg
     def test_a_failed_run_stops_whisper_before_it_releases_the_lock(self) -> None:
         pidf = Path(self._tmp.name) / "whisper.pid"
         whisper = ("import os, pathlib, sys, time; pathlib.Path(sys.argv[1]).write_text(str(os.getpid())); "
@@ -474,6 +481,7 @@ class RunTests(RenderCase):
         self.assertEqual(list(cache.glob(".whisper-*")), [])
         self.assertFalse((cache / "abc123.transcript.json").exists())
 
+    @needs_ffmpeg
     def test_next_render_builds_on_current_timeline(self) -> None:
         self.assertEqual(render.run(self.demo, "r001")["state"], "promoted")
         res = render.run(self.demo, "r002")  # nothing pending and no base repairs left
@@ -497,6 +505,7 @@ class RunTests(RenderCase):
         self.assertFalse((self.demo / "current.json").exists())
         self.assertFalse((self.root / "render.lock").exists())
 
+    @needs_ffmpeg
     def test_failed_checks_keep_the_current_cut(self) -> None:
         self.use_fakes(verify_ok=False, mix_dict=True)
         res = render.run(self.demo, "r001")
@@ -510,6 +519,7 @@ class RunTests(RenderCase):
         self.assertEqual(self.j(self.demo / "project.json")["title"], "Test tour")
         self.assertEqual(render.status(self.demo)["state"], "failed_verification")
 
+    @needs_ffmpeg
     def test_source_file_changed_mid_render_fails(self) -> None:
         def touch():
             with open(self.ssd / "protected.mp4", "ab") as f:
@@ -526,6 +536,7 @@ class RunTests(RenderCase):
         self.assertIn("599 frames, expected 600", res["message"])
         self.assertNotIn("voice", self.calls)
 
+    @needs_ffmpeg
     def test_notes_ride_in_the_timeline_and_after_promote_problems_are_reported(self) -> None:
         self.set_edits([edit("e1", "swap_broll", src="D2"), edit("e2", "add_note", t=15.0, why="Reshoot the porch")])
         self.use_fakes(promoted_ok=False)
@@ -680,6 +691,7 @@ class EngineSideTests(RenderCase):
             self.assertEqual(render.start(self.demo)["version"], "r001")
         self.assertEqual(self.j(lock)["pid"], 4_000_002)
 
+    @needs_ffmpeg
     def test_a_reused_pid_does_not_hold_the_render_lock(self) -> None:
         other = subprocess.Popen([PY, "-c", "import time; time.sleep(30)"])  # alive, but not render.py
         self.addCleanup(lambda: (other.kill(), other.wait()))
@@ -704,6 +716,7 @@ class EngineSideTests(RenderCase):
         self.assertEqual(res["state"], "promoted", res["message"])
         self.assertIsNone(other.poll())
 
+    @needs_ffmpeg
     def test_start_refuses_when_a_reused_section_picture_is_gone(self) -> None:
         self.assertEqual(render.run(self.demo, "r001")["state"], "promoted")
         (self.root / "r001" / "sections" / "1_community.mp4").unlink()  # r001 trimmed to free space, say
@@ -717,6 +730,7 @@ class EngineSideTests(RenderCase):
 
 
 class CliAndHelperTests(RenderCase):
+    @needs_ffmpeg
     def test_dry_run_prints_every_encode_and_writes_nothing(self) -> None:
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=s=64x36:r=30:d=1", "-c:v",
                         "libx264", "-pix_fmt", "yuv420p", str(self.ssd / "intro.mp4")], check=True)
@@ -801,6 +815,7 @@ class CliAndHelperTests(RenderCase):
         self.assertEqual(self.j(res[0]), {"segments": []})
         self.assertEqual(list(cache.glob(".whisper-*")), [])
 
+    @needs_ffmpeg
     def test_loudness_reads_ebur128_summary(self) -> None:
         wav = Path(self._tmp.name) / "tone.wav"
         subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=f=440:d=3:sample_rate=48000",

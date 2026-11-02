@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -11,7 +13,12 @@ import wave
 from unittest import mock
 from pathlib import Path
 
-import numpy as np
+try:
+    import numpy as np
+except ImportError:
+    raise unittest.SkipTest("needs numpy (pip install -e \".[director]\")")
+if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+    raise unittest.SkipTest("needs ffmpeg and ffprobe on PATH")
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "app"))
 import render_verify as rv  # noqa: E402
@@ -480,6 +487,7 @@ def card_png(path: Path, w: int, h: int) -> Path:
     return path
 
 
+@unittest.skipUnless(importlib.util.find_spec("PIL"), "needs Pillow")
 class CardTests(unittest.TestCase):
     def test_box_from_png_sizes(self) -> None:
         with tempfile.TemporaryDirectory() as d:

@@ -3,11 +3,19 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+
+try:
+    import numpy  # noqa: F401  (make_demo needs it)
+except ImportError:
+    raise unittest.SkipTest("needs numpy (pip install -e \".[director]\")")
+if not (shutil.which("ffmpeg") and shutil.which("ffprobe")):
+    raise unittest.SkipTest("needs ffmpeg and ffprobe on PATH")
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
